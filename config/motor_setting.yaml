@@ -1,0 +1,12 @@
+hardware_interface_node:
+  ros__parameters:
+    can_interfaces: ["can0", "can1"]
+    baud_rate: 1000000
+
+    can0:
+      motor_ids: [7]
+      motor_type: [06]
+
+    can1:
+      motor_ids: [1]
+      motor_type: [06]
