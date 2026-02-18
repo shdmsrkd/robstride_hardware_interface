@@ -13,6 +13,11 @@ namespace ProtocolCmd
     constexpr uint8_t MOTOR_REQUEST  = 0x02;
     constexpr uint8_t MOTOR_ENABLE   = 0x03;
     constexpr uint8_t MOTOR_STOP     = 0x04;
+<<<<<<< HEAD
+=======
+    constexpr uint8_t SET_POS_ZERO   = 0x06;
+    constexpr uint8_t SET_SINGLE_PARAM = 0x12;
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
 }
 
 class RobStrideProtocol {
@@ -28,7 +33,11 @@ public:
 
     // Float <-> Uint 변환 (SDK 핵심 로직)
     static uint16_t floatToUint(float x, float x_min, float x_max, int bits);
+<<<<<<< HEAD
     // static float uintToFloat(uint16_t x_int, float x_min, float x_max, int bits);
+=======
+    static float uintToFloat(uint16_t x_int, float x_min, float x_max, int bits);
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
 
     // 명령 패킷 생성: Motion Control (MIT Mode)
     static std::vector<uint8_t> createMotionCommand(

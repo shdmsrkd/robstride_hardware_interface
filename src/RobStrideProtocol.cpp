@@ -1,5 +1,6 @@
 #include "robstride_rdk_ros2/RobStrideProtocol.hpp"
 
+<<<<<<< HEAD
 /*
     [Type 8bit] [Ext 0] [Master 8bit] [Motor 8bit]
     24~31       16~23   8~15          0~7
@@ -7,6 +8,13 @@
 
 uint32_t RobStrideProtocol::generateCommandId(uint8_t type, uint8_t master_id, uint8_t motor_id)
 {
+=======
+uint32_t RobStrideProtocol::generateCommandId(uint8_t type, uint8_t master_id, uint8_t motor_id)
+{
+    // [Type 8bit] [Ext 0] [Master 8bit] [Motor 8bit]
+    // 24~31       16~23   8~15          0~7
+    // 기존 코드의 로직: (Type << 24) | (Master << 8) | Motor
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
     return (static_cast<uint32_t>(type) << 24) |
            (static_cast<uint32_t>(master_id) << 8) |
            static_cast<uint32_t>(motor_id);
@@ -14,13 +22,20 @@ uint32_t RobStrideProtocol::generateCommandId(uint8_t type, uint8_t master_id, u
 
 uint8_t RobStrideProtocol::getMotorIdFromCanId(uint32_t can_id)
 {
+<<<<<<< HEAD
+=======
+    // CAN ID 구조: [Type 8bit] [Reserved 8bit] [MotorID 8bit] [MasterID 8bit]
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
     // Motor ID는 bits 8-15
     return static_cast<uint8_t>((can_id >> 8) & 0xFF);
 }
 
 uint8_t RobStrideProtocol::getTypeFromCanId(uint32_t can_id)
 {
+<<<<<<< HEAD
     // Type은 bits 24-31
+=======
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
     return static_cast<uint8_t>((can_id >> 24) & 0xFF);
 }
 
@@ -29,18 +44,31 @@ uint16_t RobStrideProtocol::floatToUint(float x, float x_min, float x_max, int b
     float span = x_max - x_min;
     float offset = x_min;
 
+<<<<<<< HEAD
+=======
+    // Clamp
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
     if (x < x_min) x = x_min;
     else if (x > x_max) x = x_max;
 
     return static_cast<uint16_t>((x - offset) * ((static_cast<float>(1 << bits) - 1)) / span);
 }
 
+<<<<<<< HEAD
 // float RobStrideProtocol::uintToFloat(uint16_t x_int, float x_min, float x_max, int bits)
 // {
 //     float span = x_max - x_min;
 //     float offset = x_min;
 //     return (static_cast<float>(x_int) * span / (static_cast<float>((1 << bits) - 1))) + offset;
 // }
+=======
+float RobStrideProtocol::uintToFloat(uint16_t x_int, float x_min, float x_max, int bits)
+{
+    float span = x_max - x_min;
+    float offset = x_min;
+    return (static_cast<float>(x_int) * span / (static_cast<float>((1 << bits) - 1))) + offset;
+}
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
 
 std::vector<uint8_t> RobStrideProtocol::createMotionCommand(
     float p_des, float v_des, float kp, float kd, float t_ff,
@@ -65,6 +93,7 @@ std::vector<uint8_t> RobStrideProtocol::createMotionCommand(
     return data;
 }
 
+<<<<<<< HEAD
 std::vector<uint8_t> RobStrideProtocol::createEnableCommand()
 {
     return std::vector<uint8_t>(8, 0); // 8 bytes of 0
@@ -72,19 +101,38 @@ std::vector<uint8_t> RobStrideProtocol::createEnableCommand()
 
 std::vector<uint8_t> RobStrideProtocol::createDisableCommand()
 {
+=======
+std::vector<uint8_t> RobStrideProtocol::createEnableCommand() {
+    return std::vector<uint8_t>(8, 0); // 8 bytes of 0
+}
+
+std::vector<uint8_t> RobStrideProtocol::createDisableCommand() {
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
     return std::vector<uint8_t>(8, 0); // 8 bytes of 0
 }
 
 std::tuple<float, float, float, float ,float> RobStrideProtocol::parseFeedback(
     const std::vector<uint8_t>& data,
+<<<<<<< HEAD
     float p_min, float p_max, float v_min, float v_max, float t_max)
 {
+=======
+    float p_min, float p_max, float v_min, float v_max, float t_max
+) {
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
     if (data.size() < 8) return {0,0,0,0,0};
     uint16_t p_int = (data[0] << 8) | data[1];
     uint16_t v_int = (data[2] << 8) | data[3];
     uint16_t t_int = (data[4] << 8) | data[5];
     uint16_t temp_int = (data[6] << 8) | data[7];
 
+<<<<<<< HEAD
+=======
+    // 원본 코드의 매핑 방식에 따름 (-1.0f ~ 1.0f 스케일링 후 리미트 곱하기)
+    // position_ = ((static_cast<float>(position_u16) / 32767.0f) - 1.0f) * limit
+    // 이는 uintToFloat 함수와 약간 다름. 원본 로직을 그대로 구현하거나 uintToFloat를 수정해야 함.
+
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
     float p = ((static_cast<float>(p_int) / 32767.0f) - 1.0f) * p_max;
     float v = ((static_cast<float>(v_int) / 32767.0f) - 1.0f) * v_max;
     float t = ((static_cast<float>(t_int) / 32767.0f) - 1.0f) * t_max;

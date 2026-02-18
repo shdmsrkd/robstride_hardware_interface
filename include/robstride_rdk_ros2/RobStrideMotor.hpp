@@ -20,7 +20,10 @@ struct MotorLimits {
     float kd_max;
 };
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
 class RobStrideMotor {
 public:
     RobStrideMotor(std::shared_ptr<CanTransport> transport, uint8_t motor_id, ActuatorType type);
@@ -54,6 +57,7 @@ private:
     float current_ = 0.0f;
 
     void loadLimits();
+<<<<<<< HEAD
 };
 
 struct CanBusGroup
@@ -61,4 +65,7 @@ struct CanBusGroup
     std::string interface_name;
     std::shared_ptr<CanTransport> transport;
     std::vector<std::shared_ptr<RobStrideMotor>> motors;
+=======
+    void initParameters();
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
 };

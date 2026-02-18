@@ -8,10 +8,15 @@ RobStrideMotor::RobStrideMotor(std::shared_ptr<CanTransport> transport, uint8_t 
 }
 
 
+<<<<<<< HEAD
 void RobStrideMotor::loadLimits()
 {
     switch(type_)
     {
+=======
+void RobStrideMotor::loadLimits() {
+    switch(type_) {
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
         case ActuatorType::ROBSTRIDE_00:
             limits_ = { 4 * M_PI, 50.0f, 17.0f, 500.0f, 5.0f };
             break;
@@ -40,11 +45,18 @@ void RobStrideMotor::loadLimits()
     }
 }
 
+<<<<<<< HEAD
 bool RobStrideMotor::enable()
 {
     uint32_t id = RobStrideProtocol::generateCommandId(
         ProtocolCmd::MOTOR_ENABLE, master_id_, motor_id_);
 
+=======
+bool RobStrideMotor::enable() {
+    uint32_t id = RobStrideProtocol::generateCommandId(
+        ProtocolCmd::MOTOR_ENABLE, master_id_, motor_id_
+    );
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
     auto data = RobStrideProtocol::createEnableCommand();
 
     if (transport_->send(id, data))
@@ -55,8 +67,12 @@ bool RobStrideMotor::enable()
     return false;
 }
 
+<<<<<<< HEAD
 bool RobStrideMotor::disable()
 {
+=======
+bool RobStrideMotor::disable() {
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
     uint32_t id = RobStrideProtocol::generateCommandId(
         ProtocolCmd::MOTOR_STOP, master_id_, motor_id_
     );
@@ -70,8 +86,16 @@ bool RobStrideMotor::disable()
     return false;
 }
 
+<<<<<<< HEAD
 bool RobStrideMotor::sendMotionCommand(float torque, float position, float velocity, float kp, float kd)
 {
+=======
+bool RobStrideMotor::sendMotionCommand(float torque, float position, float velocity, float kp, float kd) {
+    // 원본 프로토콜의 특이점: Torque는 Data 영역이 아니라 CAN ID에 인코딩되어 전송됨.
+    // ID 구조: [Type 8bit] [Torque 16bit] [MotorID 8bit] 가 아니라
+    // 원본 코드: frame.can_id = (MotionControl << 24) | (Torque_uint << 8) | motor_id
+
+>>>>>>> e02adc99855708c0aeab7727ed6ab512e364c563
     uint16_t t_uint = RobStrideProtocol::floatToUint(torque, -limits_.torque_limit, limits_.torque_limit, 16);
 
     // ID 생성 (수동 조작 필요, 왜냐하면 표준 포맷과 약간 다름)
