@@ -20,7 +20,6 @@ struct MotorLimits {
     float kd_max;
 };
 
-
 class RobStrideMotor {
 public:
     RobStrideMotor(std::shared_ptr<CanTransport> transport, uint8_t motor_id, ActuatorType type);

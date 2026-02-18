@@ -7,7 +7,6 @@ RobStrideMotor::RobStrideMotor(std::shared_ptr<CanTransport> transport, uint8_t 
     loadLimits();
 }
 
-
 void RobStrideMotor::loadLimits()
 {
     switch(type_)
@@ -101,7 +100,6 @@ bool RobStrideMotor::processPacket(uint32_t rx_id, const std::vector<uint8_t>& r
     // MOTOR_REQUEST 또는 MOTION_CONTROL 응답 모두 피드백으로 처리
     if (type == ProtocolCmd::MOTOR_REQUEST || type == ProtocolCmd::MOTION_CONTROL)
     {
-        // TODO 현재 전류값 수신 처리
         auto [p, v, t, temp, c] = RobStrideProtocol::parseFeedback(
             rx_data,
             limits_.pos_limit, limits_.pos_limit,

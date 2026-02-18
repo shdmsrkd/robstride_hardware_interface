@@ -35,13 +35,6 @@ uint16_t RobStrideProtocol::floatToUint(float x, float x_min, float x_max, int b
     return static_cast<uint16_t>((x - offset) * ((static_cast<float>(1 << bits) - 1)) / span);
 }
 
-// float RobStrideProtocol::uintToFloat(uint16_t x_int, float x_min, float x_max, int bits)
-// {
-//     float span = x_max - x_min;
-//     float offset = x_min;
-//     return (static_cast<float>(x_int) * span / (static_cast<float>((1 << bits) - 1))) + offset;
-// }
-
 std::vector<uint8_t> RobStrideProtocol::createMotionCommand(
     float p_des, float v_des, float kp, float kd, float t_ff,
     float p_min, float p_max, float v_min, float v_max, float kp_max, float kd_max, float t_max)

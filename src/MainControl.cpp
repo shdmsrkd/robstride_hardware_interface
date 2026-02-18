@@ -1,5 +1,4 @@
 #include "robstride_rdk_ros2/MainControl.hpp"
-#include <thread>
 
 using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
@@ -165,19 +164,12 @@ void MainControlNode::handle_read_packet()
     uint32_t rx_id;
     std::vector<uint8_t> rx_data;
 
-    // 각 CAN 인터페이스에서 수신 (타임아웃으로 응답 대기)
+    // 각 CAN 인터페이스에서 non-blocking 수신
     for (auto& group : can_groups_)
     {
-        // 각 CAN 버스에서 최대 모터 수만큼 응답을 받으려 시도
-        int max_reads = static_cast<int>(group.motors.size()) * 3; // 여유분 포함
-        for (int r = 0; r < max_reads; r++)
+        while (group.transport->receive(rx_id, rx_data, 0))
         {
-            if (!group.transport->receive(rx_id, rx_data, 2))  // 2ms 타임아웃
-                break;
             uint8_t motor_id = RobStrideProtocol::getMotorIdFromCanId(rx_id);
-            uint8_t type = RobStrideProtocol::getTypeFromCanId(rx_id);
-            RCLCPP_DEBUG(this->get_logger(), "[Read] %s RX CAN_ID=0x%08X, motor_id=%d, type=0x%02X, data_len=%zu",
-                group.interface_name.c_str(), rx_id, motor_id, type, rx_data.size());
 
             for (auto& motor : group.motors)
             {
