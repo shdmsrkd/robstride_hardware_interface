@@ -11,8 +11,8 @@
 
 enum class ControlState
 {
-    READ_PACKET,
-    WRITE_PACKET
+    WRITE_PACKET,
+    READ_PACKET
 };
 
 struct MotorCommand {

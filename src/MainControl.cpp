@@ -116,9 +116,9 @@ CallbackReturn MainControlNode::on_activate(const rclcpp_lifecycle::State &)
         }
     }
 
-    // 제어 루프 타이머 시작 (100Hz)
+    // 제어 루프 타이머 시작 (200Hz, WRITE/READ 번갈아 실행하여 제어주기 100Hz)
     timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(10),
+        std::chrono::milliseconds(5),
         std::bind(&MainControlNode::control_loop, this));
 
     RCLCPP_INFO(this->get_logger(), "[Activate] Activated successfully with %zu motors", all_motors_.size());
@@ -127,20 +127,23 @@ CallbackReturn MainControlNode::on_activate(const rclcpp_lifecycle::State &)
 
 void MainControlNode::control_loop()
 {
-    // Hz 측정
+    // Hz 측정 (WRITE 기준으로 제어주기 측정)
     static auto last_print_time = std::chrono::steady_clock::now();
-    static int loop_count = 0;
+    static int write_count = 0;
 
-    loop_count++;
-    auto current_time = std::chrono::steady_clock::now();
-    std::chrono::duration<double> elapsed = current_time - last_print_time;
-
-    if (elapsed.count() >= 1.0)
+    if (current_state == ControlState::WRITE_PACKET)
     {
-        double hz = loop_count / elapsed.count();
-        RCLCPP_INFO(this->get_logger(), "Control Loop Rate: %.2f Hz", hz);
-        last_print_time = current_time;
-        loop_count = 0;
+        write_count++;
+        auto current_time = std::chrono::steady_clock::now();
+        std::chrono::duration<double> elapsed = current_time - last_print_time;
+
+        if (elapsed.count() >= 1.0)
+        {
+            double hz = write_count / elapsed.count();
+            RCLCPP_INFO(this->get_logger(), "Motor Control Rate: %.2f Hz", hz);
+            last_print_time = current_time;
+            write_count = 0;
+        }
     }
 
     switch(current_state)
@@ -152,6 +155,11 @@ void MainControlNode::control_loop()
             handle_read_packet();
             break;
     }
+}
+
+void MainControlNode::transition_to(ControlState new_state)
+{
+    current_state = new_state;
 }
 
 // 모터 상태값 받기
@@ -235,11 +243,6 @@ void MainControlNode::handle_write_packet()
     }
 
     transition_to(ControlState::READ_PACKET);
-}
-
-void MainControlNode::transition_to(ControlState new_state)
-{
-    current_state = new_state;
 }
 
 void MainControlNode::walkCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
