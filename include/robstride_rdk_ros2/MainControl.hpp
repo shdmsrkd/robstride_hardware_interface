@@ -48,6 +48,9 @@ private:
     void transition_to(ControlState new_state);
     void initParameters();
 
+    void canSetup();
+    std::string execute_command(const std::string& cmd);
+
     // 멤버 변수
     std::vector<CanBusGroup> can_groups_;
     std::vector<std::shared_ptr<RobStrideMotor>> all_motors_;  // 모든 CAN의 모터를 순서대로 보관

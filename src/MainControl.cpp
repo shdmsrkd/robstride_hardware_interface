@@ -57,9 +57,69 @@ void MainControlNode::initParameters()
     }
 }
 
+std::string MainControlNode::execute_command(const std::string& cmd)
+{
+    std::array<char, 128> buffer;
+    std::string result;
+
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
+
+    if (!pipe) {
+      RCLCPP_ERROR(this->get_logger(), "popen() 실패! 명령어를 실행할 수 없습니다.");
+      return "";
+    }
+
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+      result += buffer.data();
+    }
+
+    return result;
+
+}
+
+void MainControlNode::canSetup()
+{
+    execute_command("sudo ip link set can0 down");
+    execute_command("sudo ip link set can0 up type can bitrate 1000000");
+
+    execute_command("sudo ip link set can1 down");
+    execute_command("sudo ip link set can1 up type can bitrate 1000000");
+
+    execute_command("sudo ip link set can2 down");
+    execute_command("sudo ip link set can2 up type can bitrate 1000000");
+
+    execute_command("sudo ip link set can3 down");
+    execute_command("sudo ip link set can3 up type can bitrate 1000000");
+
+    std::string result = execute_command("ip link show can0 2>&1");
+    if(result.find("state UP") != std::string::npos)
+    { RCLCPP_INFO(this->get_logger(), "CAN interface setup successful! 'can0' is activated."); }
+    else
+    { RCLCPP_ERROR(this->get_logger(), "CAN interface setup failed! 'can0' is not activated."); }
+
+    result = execute_command("ip link show can1 2>&1");
+    if(result.find("state UP") != std::string::npos)
+    { RCLCPP_INFO(this->get_logger(), "CAN interface setup successful! 'can1' is activated."); }
+    else
+    { RCLCPP_ERROR(this->get_logger(), "CAN interface setup failed! 'can1' is not activated."); }
+
+    result = execute_command("ip link show can2 2>&1");
+    if(result.find("state UP") != std::string::npos)
+    { RCLCPP_INFO(this->get_logger(), "CAN interface setup successful! 'can2' is activated."); }
+    else
+    { RCLCPP_ERROR(this->get_logger(), "CAN interface setup failed! 'can2' is not activated."); }
+
+    result = execute_command("ip link show can3 2>&1");
+    if(result.find("state UP") != std::string::npos)
+    { RCLCPP_INFO(this->get_logger(), "CAN interface setup successful! 'can3' is activated."); }
+    else { RCLCPP_ERROR(this->get_logger(), "CAN interface setup failed! 'can3' is not activated."); }
+}
+
 CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
 {
     RCLCPP_INFO(this->get_logger(), "[Configure] Configuring...");
+
+    canSetup();
 
     // 파라미터 초기화
     initParameters();
