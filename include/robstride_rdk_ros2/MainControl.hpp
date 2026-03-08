@@ -7,6 +7,7 @@
 #include "RobStrideMotor.hpp"
 #include "CanTransport.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include <memory>
 
 enum class ControlState
@@ -40,6 +41,7 @@ private:
     // 주기적으로 실행될 제어 루프
     void control_loop();
     void walkCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg);
+    void torqueCallback(const std_msgs::msg::Bool::SharedPtr msg);
 
     void handle_read_packet();
     void handle_write_packet();
@@ -51,6 +53,7 @@ private:
     std::vector<std::shared_ptr<RobStrideMotor>> all_motors_;  // 모든 CAN의 모터를 순서대로 보관
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr walk_sub;
+    rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr torque_sub;
 
     ControlState current_state;
 

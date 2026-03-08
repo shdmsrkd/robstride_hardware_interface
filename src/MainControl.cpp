@@ -10,6 +10,11 @@ MainControlNode::MainControlNode(const rclcpp::NodeOptions & options)
         "walk2interface", 10,
         std::bind(&MainControlNode::walkCallback, this, std::placeholders::_1)
     );
+
+    torque_sub = this->create_subscription<std_msgs::msg::Bool>(
+        "torque_enable", 10,
+        std::bind(&MainControlNode::torqueCallback, this, std::placeholders::_1)
+    );
 }
 
 MainControlNode::~MainControlNode()
@@ -289,6 +294,37 @@ void MainControlNode::walkCallback(const std_msgs::msg::Float32MultiArray::Share
 
     std::lock_guard<std::mutex> lock(command_mutex_);
     motor_commands_ = std::move(temp_commands);
+}
+
+void MainControlNode::torqueCallback(const std_msgs::msg::Bool::SharedPtr msg)
+{
+    bool torque_enable = msg->data;
+
+    for (size_t i = 0; i < all_motors_.size(); i++)
+    {
+        if (torque_enable)
+        {
+            if (all_motors_[i]->enable())
+            {
+                RCLCPP_INFO(this->get_logger(), "[Torque Callback] Motor[%zu] enabled successfully", i);
+            }
+            else
+            {
+                RCLCPP_ERROR(this->get_logger(), "[Torque Callback] Failed to enable motor[%zu]", i);
+            }
+        }
+        else
+        {
+            if (all_motors_[i]->disable())
+            {
+                RCLCPP_INFO(this->get_logger(), "[Torque Callback] Motor[%zu] disabled successfully", i);
+            }
+            else
+            {
+                RCLCPP_ERROR(this->get_logger(), "[Torque Callback] Failed to disable motor[%zu]", i);
+            }
+        }
+    }
 }
 
 // 메인 함수
