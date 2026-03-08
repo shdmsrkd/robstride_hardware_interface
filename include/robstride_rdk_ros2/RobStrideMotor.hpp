@@ -41,7 +41,7 @@ public:
 private:
     std::shared_ptr<CanTransport> transport_;
     uint8_t motor_id_;
-    uint8_t master_id_ = 0xFF;
+    uint8_t master_id_ = 0xFD;
     ActuatorType type_;
     MotorLimits limits_;
 

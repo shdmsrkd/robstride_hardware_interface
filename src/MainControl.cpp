@@ -1,4 +1,15 @@
 #include "robstride_rdk_ros2/MainControl.hpp"
+#include <cmath>
+
+static float wrapToPi(float angle)
+{
+    angle = std::fmod(angle, 2.0f * static_cast<float>(M_PI));
+    if (angle > static_cast<float>(M_PI))
+        angle -= 2.0f * static_cast<float>(M_PI);
+    else if (angle < -static_cast<float>(M_PI))
+        angle += 2.0f * static_cast<float>(M_PI);
+    return angle;
+}
 
 using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
@@ -213,8 +224,9 @@ void MainControlNode::handle_read_packet()
             success_count++;
             std::lock_guard<std::mutex> lock(command_mutex_);
             float desired_pos = (i < motor_commands_.size()) ? motor_commands_[i].position : 0.0f;
+            float wrapped_pos = wrapToPi(static_cast<float>(all_motors_[i]->getPosition()));
             RCLCPP_INFO(this->get_logger(), "[Read Packet] Motor[%zu] Pos: %.3f, Vel: %.3f, Current: %.3f A, Desired Pos: %.3f",
-            i, (float)all_motors_[i]->getPosition(), (float)all_motors_[i]->getVelocity(), (float)all_motors_[i]->getCurrent(), desired_pos);
+            i, wrapped_pos, (float)all_motors_[i]->getVelocity(), (float)all_motors_[i]->getCurrent(), desired_pos);
         }
         else
         {
@@ -232,16 +244,30 @@ void MainControlNode::handle_write_packet()
 {
     std::lock_guard<std::mutex> lock(command_mutex_);
 
-    // 명령이 있으면 전송, 없으면 이전 명령 유지
     if(!motor_commands_.empty())
     {
         for(size_t i = 0; i < all_motors_.size() && i < motor_commands_.size(); i++)
         {
+            float raw_pos = static_cast<float>(all_motors_[i]->getPosition());
+            float target_pos = wrapToPi(static_cast<float>(motor_commands_[i].position));
+
+            float diff = target_pos - wrapToPi(raw_pos);
+            if (diff > static_cast<float>(M_PI))  diff -= 2.0f * static_cast<float>(M_PI);
+            if (diff < -static_cast<float>(M_PI)) diff += 2.0f * static_cast<float>(M_PI);
+
+            float normalized_target = raw_pos + diff;
+
             all_motors_[i]->sendMotionCommand(
-                motor_commands_[i].torque, (float)motor_commands_[i].position,
-                (float)motor_commands_[i].velocity, (float)motor_commands_[i].kp, (float)motor_commands_[i].kd);
+                motor_commands_[i].torque, normalized_target,
+                (float)motor_commands_[i].velocity,
+                (float)motor_commands_[i].kp, (float)motor_commands_[i].kd);
+
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+                "[Write Packet] Motor[%zu] raw_pos: %.3f, target: %.3f, diff: %.3f, cmd: %.3f",
+                i, raw_pos, target_pos, diff, normalized_target);
         }
     }
+
     else
     {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[Write Packet] motor_commands_ is empty!");
