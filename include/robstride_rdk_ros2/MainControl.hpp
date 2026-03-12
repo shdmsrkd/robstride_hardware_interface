@@ -57,11 +57,20 @@ private:
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr walk_sub;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr torque_sub;
+    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr state_pub;
+    rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr initial_pub;
 
     ControlState current_state;
 
     std::vector<MotorCommand> motor_commands_;
     std::mutex command_mutex_;
+
+    // 초기 set 자세
+    bool walk_initialized_ = false;
+    bool start_positions_captured_ = false;
+    std::vector<float> start_positions_;
+    int init_tick_count_ = 0;
+    static constexpr int INIT_TOTAL_TICKS = 100;
 };
 
 #endif // MAIN_CONTROL_HPP

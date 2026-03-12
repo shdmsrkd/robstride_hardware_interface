@@ -121,6 +121,10 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
 
     canSetup();
 
+    // Publisher 초기화
+    state_pub = this->create_publisher<std_msgs::msg::Float32MultiArray>("motor_states", 10);
+    initial_pub = this->create_publisher<std_msgs::msg::Bool>("walk_initialized", 10);
+
     // 파라미터 초기화
     initParameters();
 
@@ -277,6 +281,22 @@ void MainControlNode::handle_read_packet()
         }
     }
 
+    auto msg = std_msgs::msg::Float32MultiArray();
+    int height_rows = static_cast<int>(all_motors_.size());
+    int width_cols = 2; // position, velocity
+
+    msg.layout.dim.resize(2);
+    msg.layout.dim[0].label = "height";
+    msg.layout.dim[0].size = height_rows;
+    msg.layout.dim[0].stride = height_rows * width_cols;
+
+    msg.layout.dim[1].label = "width";
+    msg.layout.dim[1].size = width_cols;
+    msg.layout.dim[1].stride = width_cols;
+
+    msg.data.resize(height_rows * width_cols);
+    int data_idx = 0;
+
     for (size_t i = 0; i < all_motors_.size(); i++)
     {
         if (current_cycle_updated[i])
@@ -285,8 +305,14 @@ void MainControlNode::handle_read_packet()
             std::lock_guard<std::mutex> lock(command_mutex_);
             float desired_pos = (i < motor_commands_.size()) ? motor_commands_[i].position : 0.0f;
             float wrapped_pos = wrapToPi(static_cast<float>(all_motors_[i]->getPosition()));
-            RCLCPP_INFO(this->get_logger(), "[Read Packet] Motor[%zu] Pos: %.3f, Vel: %.3f, Current: %.3f A, Desired Pos: %.3f",
+            RCLCPP_INFO(this->get_logger(), "[Red Packet] Motor[%zu] Pos: %.3f, Vel: %.3f, Current: %.3f A, Desired Pos: %.3f",
             i, wrapped_pos, (float)all_motors_[i]->getVelocity(), (float)all_motors_[i]->getCurrent(), desired_pos);
+
+            // Col 0: position
+            msg.data[data_idx++] = wrapped_pos;
+
+            // Col 1: velocity
+            msg.data[data_idx++] = static_cast<float>(all_motors_[i]->getVelocity());
         }
         else
         {
@@ -296,6 +322,7 @@ void MainControlNode::handle_read_packet()
                 i, success_count, fail_count);
         }
     }
+    state_pub->publish(msg);
 
     transition_to(ControlState::WRITE_PACKET);
 }
@@ -306,28 +333,80 @@ void MainControlNode::handle_write_packet()
 
     if(!motor_commands_.empty())
     {
-        for(size_t i = 0; i < all_motors_.size() && i < motor_commands_.size(); i++)
+        if(!walk_initialized_)
         {
-            float raw_pos = static_cast<float>(all_motors_[i]->getPosition());
-            float target_pos = wrapToPi(static_cast<float>(motor_commands_[i].position));
+            if(!start_positions_captured_)
+            {
+                start_positions_.resize(all_motors_.size());
+                for(size_t i = 0; i < all_motors_.size(); i++)
+                {
+                    start_positions_[i] = static_cast<float>(all_motors_[i]->getPosition());
+                }
+                start_positions_captured_ = true;
+                init_tick_count_ = 0;
+                RCLCPP_INFO(this->get_logger(), "[Init] Start positions captured for %zu motors", all_motors_.size());
+            }
 
-            float diff = target_pos - wrapToPi(raw_pos);
-            if (diff > static_cast<float>(M_PI))  diff -= 2.0f * static_cast<float>(M_PI);
-            if (diff < -static_cast<float>(M_PI)) diff += 2.0f * static_cast<float>(M_PI);
+            init_tick_count_++;
+            float alpha = static_cast<float>(init_tick_count_) / static_cast<float>(INIT_TOTAL_TICKS);
+            if(alpha > 1.0f) alpha = 1.0f;
 
-            float normalized_target = raw_pos + diff;
+            for(size_t i = 0; i < all_motors_.size() && i < motor_commands_.size(); i++)
+            {
+                float start_raw = start_positions_[i];
+                float target_pos = wrapToPi(motor_commands_[i].position);
 
-            all_motors_[i]->sendMotionCommand(
-                motor_commands_[i].torque, normalized_target,
-                (float)motor_commands_[i].velocity,
-                (float)motor_commands_[i].kp, (float)motor_commands_[i].kd);
+                // 시작 위치에서 목표까지의 최단 경로 차이 계산
+                float diff = target_pos - wrapToPi(start_raw);
+                if (diff > static_cast<float>(M_PI))  diff -= 2.0f * static_cast<float>(M_PI);
+                if (diff < -static_cast<float>(M_PI)) diff += 2.0f * static_cast<float>(M_PI);
 
-            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
-                "[Write Packet] Motor[%zu] raw_pos: %.3f, target: %.3f, diff: %.3f, cmd: %.3f",
-                i, raw_pos, target_pos, diff, normalized_target);
+                float interpolated_target = start_raw + alpha * diff;
+
+                all_motors_[i]->sendMotionCommand(
+                    motor_commands_[i].torque, interpolated_target,
+                    motor_commands_[i].velocity,
+                    motor_commands_[i].kp, motor_commands_[i].kd);
+
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 200,
+                    "[Init] Motor[%zu] tick %d/%d alpha=%.2f start=%.3f target=%.3f cmd=%.3f",
+                    i, init_tick_count_, INIT_TOTAL_TICKS, alpha, start_raw, target_pos, interpolated_target);
+            }
+
+            if(init_tick_count_ >= INIT_TOTAL_TICKS)
+            {
+                walk_initialized_ = true;
+                RCLCPP_INFO(this->get_logger(), "[Init] Walk initialized after %d ticks", init_tick_count_);
+                auto msg = std_msgs::msg::Bool();
+                msg.data = true;
+                initial_pub->publish(msg);
+            }
+        }
+        else
+        {
+            // 정상 제어 모드
+            for(size_t i = 0; i < all_motors_.size() && i < motor_commands_.size(); i++)
+            {
+                float raw_pos = static_cast<float>(all_motors_[i]->getPosition());
+                float target_pos = wrapToPi(static_cast<float>(motor_commands_[i].position));
+
+                float diff = target_pos - wrapToPi(raw_pos);
+                if (diff > static_cast<float>(M_PI))  diff -= 2.0f * static_cast<float>(M_PI);
+                if (diff < -static_cast<float>(M_PI)) diff += 2.0f * static_cast<float>(M_PI);
+
+                float normalized_target = raw_pos + diff;
+
+                all_motors_[i]->sendMotionCommand(
+                    motor_commands_[i].torque, normalized_target,
+                    motor_commands_[i].velocity,
+                    motor_commands_[i].kp, motor_commands_[i].kd);
+
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+                    "[Write Packet] Motor[%zu] raw_pos: %.3f, target: %.3f, diff: %.3f, cmd: %.3f",
+                    i, raw_pos, target_pos, diff, normalized_target);
+            }
         }
     }
-
     else
     {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[Write Packet] motor_commands_ is empty!");
