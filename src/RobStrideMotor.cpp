@@ -71,13 +71,17 @@ bool RobStrideMotor::disable()
 
 bool RobStrideMotor::sendMotionCommand(float torque, float position, float velocity, float kp, float kd)
 {
+    // 부호 반전
+    float hw_position = -position;
+    float hw_velocity = -velocity;
+
     uint16_t t_uint = RobStrideProtocol::floatToUint(torque, -limits_.torque_limit, limits_.torque_limit, 16);
 
     // ID 생성 (수동 조작 필요, 왜냐하면 표준 포맷과 약간 다름)
     uint32_t id = (ProtocolCmd::MOTION_CONTROL << 24) | (t_uint << 8) | motor_id_;
 
     auto data = RobStrideProtocol::createMotionCommand(
-        position, velocity, kp, kd, 0.0f, // t_ff is in ID
+        hw_position, hw_velocity, kp, kd, 0.0f, // t_ff is in ID
         -limits_.pos_limit, limits_.pos_limit,
         -limits_.vel_limit, limits_.vel_limit,
         limits_.kp_max, limits_.kd_max, 0.0f
