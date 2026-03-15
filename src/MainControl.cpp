@@ -1,6 +1,8 @@
 #include "robstride_rdk_ros2/MainControl.hpp"
 #include <cmath>
 
+
+
 static float wrapToPi(float angle)
 {
     angle = std::fmod(angle, 2.0f * static_cast<float>(M_PI));
@@ -16,14 +18,17 @@ using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface
 MainControlNode::MainControlNode(const rclcpp::NodeOptions & options)
     : LifecycleNode("main_control_node", options), current_state(ControlState::WRITE_PACKET)
 {
+    rclcpp::QoS cmd_qos(rclcpp::KeepLast(1));
+    cmd_qos.reliable();
+
     RCLCPP_INFO(this->get_logger(), "MainControlNode created");
-    walk_sub = this->create_subscription<std_msgs::msg::Float32MultiArray>(
-        "walk2interface", 10,
+    walk_sub = this->create_subscription<roa_interfaces::msg::MotorCommandArray>(
+        "/hardware_interface/command", cmd_qos,
         std::bind(&MainControlNode::walkCallback, this, std::placeholders::_1)
     );
 
     torque_sub = this->create_subscription<std_msgs::msg::Bool>(
-        "torque_enable", 10,
+        "/hardware_interface/etop", 10,
         std::bind(&MainControlNode::torqueCallback, this, std::placeholders::_1)
     );
 }
@@ -81,9 +86,11 @@ void MainControlNode::canSetup()
 {
     execute_command("sudo ip link set can0 down");
     execute_command("sudo ip link set can0 up type can bitrate 1000000");
+    execute_command("sleep 0.1");
 
     execute_command("sudo ip link set can1 down");
     execute_command("sudo ip link set can1 up type can bitrate 1000000");
+    execute_command("sleep 0.1");
 
     execute_command("sudo ip link set can2 down");
     execute_command("sudo ip link set can2 up type can bitrate 1000000");
@@ -120,10 +127,11 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
     RCLCPP_INFO(this->get_logger(), "[Configure] Configuring...");
 
     canSetup();
-
+    rclcpp::QoS cmd_qos(rclcpp::KeepLast(1));
+    cmd_qos.reliable();
     // Publisher 초기화
-    state_pub = this->create_publisher<std_msgs::msg::Float32MultiArray>("motor_states", 10);
-    initial_pub = this->create_publisher<std_msgs::msg::Bool>("walk_initialized", 10);
+    state_pub = this->create_publisher<roa_interfaces::msg::MotorStateArray>("/hardware_interface/state", cmd_qos);
+    initial_pub = this->create_publisher<std_msgs::msg::Bool>("walk_initialized", cmd_qos);
 
     // 파라미터 초기화
     initParameters();
@@ -281,20 +289,9 @@ void MainControlNode::handle_read_packet()
         }
     }
 
-    auto msg = std_msgs::msg::Float32MultiArray();
-    int height_rows = static_cast<int>(all_motors_.size());
-    int width_cols = 2; // position, velocity
+    auto msg = roa_interfaces::msg::MotorStateArray();
+    msg.states.resize(static_cast<int>(all_motors_.size()));
 
-    msg.layout.dim.resize(2);
-    msg.layout.dim[0].label = "height";
-    msg.layout.dim[0].size = height_rows;
-    msg.layout.dim[0].stride = height_rows * width_cols;
-
-    msg.layout.dim[1].label = "width";
-    msg.layout.dim[1].size = width_cols;
-    msg.layout.dim[1].stride = width_cols;
-
-    msg.data.resize(height_rows * width_cols);
     int data_idx = 0;
 
     for (size_t i = 0; i < all_motors_.size(); i++)
@@ -303,16 +300,22 @@ void MainControlNode::handle_read_packet()
         {
             success_count++;
             std::lock_guard<std::mutex> lock(command_mutex_);
-            float desired_pos = (i < motor_commands_.size()) ? motor_commands_[i].position : 0.0f;
+            float desired_pos = (i < motor_commands_.commands.size()) ? motor_commands_.commands[i].position : 0.0f;
             float wrapped_pos = wrapToPi(static_cast<float>(all_motors_[i]->getPosition()));
             RCLCPP_INFO(this->get_logger(), "[Red Packet] Motor[%zu] Pos: %.3f, Vel: %.3f, Current: %.3f A, Desired Pos: %.3f",
             i, wrapped_pos, (float)all_motors_[i]->getVelocity(), (float)all_motors_[i]->getCurrent(), desired_pos);
 
+
+            msg.states[i].motor_id = all_motors_[i]->getMotorId();
             // Col 0: position
-            msg.data[data_idx++] = wrapped_pos;
+            msg.states[i].position = wrapped_pos;
 
             // Col 1: velocity
-            msg.data[data_idx++] = static_cast<float>(all_motors_[i]->getVelocity());
+            msg.states[i].velocity = static_cast<float>(all_motors_[i]->getVelocity());
+
+            // Col 2: current
+            msg.states[i].current = static_cast<float>(all_motors_[i]->getCurrent());
+
         }
         else
         {
@@ -331,7 +334,7 @@ void MainControlNode::handle_write_packet()
 {
     std::lock_guard<std::mutex> lock(command_mutex_);
 
-    if(!motor_commands_.empty())
+    if(!motor_commands_.commands.empty())
     {
         if(!walk_initialized_)
         {
@@ -351,10 +354,10 @@ void MainControlNode::handle_write_packet()
             float alpha = static_cast<float>(init_tick_count_) / static_cast<float>(INIT_TOTAL_TICKS);
             if(alpha > 1.0f) alpha = 1.0f;
 
-            for(size_t i = 0; i < all_motors_.size() && i < motor_commands_.size(); i++)
+            for(size_t i = 0; i < all_motors_.size() && i < motor_commands_.commands.size(); i++)
             {
                 float start_raw = start_positions_[i];
-                float target_pos = wrapToPi(motor_commands_[i].position);
+                float target_pos = wrapToPi(motor_commands_.commands[i].position);
 
                 // 시작 위치에서 목표까지의 최단 경로 차이 계산
                 float diff = target_pos - wrapToPi(start_raw);
@@ -364,9 +367,9 @@ void MainControlNode::handle_write_packet()
                 float interpolated_target = start_raw + alpha * diff;
 
                 all_motors_[i]->sendMotionCommand(
-                    motor_commands_[i].torque, interpolated_target,
-                    motor_commands_[i].velocity,
-                    motor_commands_[i].kp, motor_commands_[i].kd);
+                    motor_commands_.commands[i].torque, interpolated_target,
+                    motor_commands_.commands[i].velocity,
+                    motor_commands_.commands[i].kp, motor_commands_.commands[i].kd);
 
                 RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 200,
                     "[Init] Motor[%zu] tick %d/%d alpha=%.2f start=%.3f target=%.3f cmd=%.3f",
@@ -385,10 +388,10 @@ void MainControlNode::handle_write_packet()
         else
         {
             // 정상 제어 모드
-            for(size_t i = 0; i < all_motors_.size() && i < motor_commands_.size(); i++)
+            for(size_t i = 0; i < all_motors_.size() && i < motor_commands_.commands.size(); i++)
             {
                 float raw_pos = static_cast<float>(all_motors_[i]->getPosition());
-                float target_pos = wrapToPi(static_cast<float>(motor_commands_[i].position));
+                float target_pos = wrapToPi(static_cast<float>(motor_commands_.commands[i].position));
 
                 float diff = target_pos - wrapToPi(raw_pos);
                 if (diff > static_cast<float>(M_PI))  diff -= 2.0f * static_cast<float>(M_PI);
@@ -397,9 +400,9 @@ void MainControlNode::handle_write_packet()
                 float normalized_target = raw_pos + diff;
 
                 all_motors_[i]->sendMotionCommand(
-                    motor_commands_[i].torque, normalized_target,
-                    motor_commands_[i].velocity,
-                    motor_commands_[i].kp, motor_commands_[i].kd);
+                    motor_commands_.commands[i].torque, normalized_target,
+                    motor_commands_.commands[i].velocity,
+                    motor_commands_.commands[i].kp, motor_commands_.commands[i].kd);
 
                 RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
                     "[Write Packet] Motor[%zu] raw_pos: %.3f, target: %.3f, diff: %.3f, cmd: %.3f",
@@ -415,46 +418,21 @@ void MainControlNode::handle_write_packet()
     transition_to(ControlState::READ_PACKET);
 }
 
-void MainControlNode::walkCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg)
+void MainControlNode::walkCallback(const roa_interfaces::msg::MotorCommandArray::SharedPtr msg)
 {
-    // 데이터 유효성 검사
-    if (msg->layout.dim.size() < 2)
+
+    if (msg->commands.size() != static_cast<int>(all_motors_.size()))
     {
-        RCLCPP_WARN(this->get_logger(), "[Walk Callback] This is not 2D matrix data");
+        RCLCPP_WARN(this->get_logger(), "[Walk Callback] Row size does not match the number of motors : %d (Expected: %zu)", msg->commands.size(), all_motors_.size());
         return;
     }
 
-    // 행렬 설정: 행 = 모터 개수, 열 = 5 (position, velocity, torque, kp, kd)
-    int height_rows = msg->layout.dim[0].size;  // 모터 개수
-    int width_cols = msg->layout.dim[1].size;   // 5개 값
+    roa_interfaces::msg::MotorCommandArray temp_commands;
+    temp_commands.commands.reserve(msg->commands.size());
 
-    if (width_cols != 5)
+    for (const auto& cmd : msg->commands)
     {
-        RCLCPP_WARN(this->get_logger(), "[Walk Callback] Column size is not 5 : %d", width_cols);
-        return;
-    }
-
-    if (height_rows != static_cast<int>(all_motors_.size()))
-    {
-        RCLCPP_WARN(this->get_logger(), "[Walk Callback] Row size does not match the number of motors : %d (Expected: %zu)", height_rows, all_motors_.size());
-        return;
-    }
-
-    std::vector<MotorCommand> temp_commands;
-    temp_commands.reserve(height_rows);
-
-    for (int r = 0; r < height_rows; r++)
-    {
-        int idx = r * width_cols;
-
-        MotorCommand cmd;
-        cmd.torque   = msg->data[idx + 0];
-        cmd.position = msg->data[idx + 1];
-        cmd.velocity = msg->data[idx + 2];
-        cmd.kp       = msg->data[idx + 3];
-        cmd.kd       = msg->data[idx + 4];
-
-        temp_commands.push_back(cmd);
+        temp_commands.commands.push_back(cmd);
     }
 
     std::lock_guard<std::mutex> lock(command_mutex_);

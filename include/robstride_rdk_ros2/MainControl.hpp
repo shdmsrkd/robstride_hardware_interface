@@ -8,6 +8,11 @@
 #include "CanTransport.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "roa_interfaces/msg/motor_state_array.hpp"
+#include "roa_interfaces/msg/motor_command.hpp"
+#include "roa_interfaces/msg/motor_command_array.hpp"
+#include "roa_interfaces/msg/motor_state.hpp"
+#include "roa_interfaces/msg/motor_state_array.hpp"
 #include <memory>
 
 enum class ControlState
@@ -16,13 +21,6 @@ enum class ControlState
     READ_PACKET
 };
 
-struct MotorCommand {
-    float position;
-    float velocity;
-    float torque;
-    float kp;
-    float kd;
-};
 
 class MainControlNode : public rclcpp_lifecycle::LifecycleNode {
 public:
@@ -40,7 +38,7 @@ public:
 private:
     // 주기적으로 실행될 제어 루프
     void control_loop();
-    void walkCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg);
+    void walkCallback(const roa_interfaces::msg::MotorCommandArray::SharedPtr msg);
     void torqueCallback(const std_msgs::msg::Bool::SharedPtr msg);
 
     void handle_read_packet();
@@ -55,14 +53,14 @@ private:
     std::vector<CanBusGroup> can_groups_;
     std::vector<std::shared_ptr<RobStrideMotor>> all_motors_;  // 모든 CAN의 모터를 순서대로 보관
     rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr walk_sub;
+    rclcpp::Subscription<roa_interfaces::msg::MotorCommandArray>::SharedPtr walk_sub;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr torque_sub;
-    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr state_pub;
+    rclcpp::Publisher<roa_interfaces::msg::MotorStateArray>::SharedPtr state_pub;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr initial_pub;
 
     ControlState current_state;
 
-    std::vector<MotorCommand> motor_commands_;
+    roa_interfaces::msg::MotorCommandArray motor_commands_;
     std::mutex command_mutex_;
 
     // 초기 set 자세
