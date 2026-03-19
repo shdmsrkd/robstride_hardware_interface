@@ -86,14 +86,15 @@ void MainControlNode::canSetup()
 {
     execute_command("sudo ip link set can0 down");
     execute_command("sudo ip link set can0 up type can bitrate 1000000");
-    execute_command("sleep 0.1");
+    execute_command("sleep 0.5");
 
     execute_command("sudo ip link set can1 down");
     execute_command("sudo ip link set can1 up type can bitrate 1000000");
-    execute_command("sleep 0.1");
+    execute_command("sleep 0.5");
 
     execute_command("sudo ip link set can2 down");
     execute_command("sudo ip link set can2 up type can bitrate 1000000");
+    execute_command("sleep 0.5");
 
     execute_command("sudo ip link set can3 down");
     execute_command("sudo ip link set can3 up type can bitrate 1000000");
@@ -129,8 +130,11 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
     canSetup();
     rclcpp::QoS cmd_qos(rclcpp::KeepLast(1));
     cmd_qos.reliable();
+    rclcpp::QoS motor_status_qos(rclcpp::KeepLast(1));
+    motor_status_qos.best_effort();
+
     // Publisher 초기화
-    state_pub = this->create_publisher<roa_interfaces::msg::MotorStateArray>("/hardware_interface/state", cmd_qos);
+    state_pub = this->create_publisher<roa_interfaces::msg::MotorStateArray>("/hardware_interface/state", motor_status_qos);
     initial_pub = this->create_publisher<std_msgs::msg::Bool>("walk_initialized", cmd_qos);
 
     // 파라미터 초기화
@@ -380,9 +384,9 @@ void MainControlNode::handle_write_packet()
             {
                 walk_initialized_ = true;
                 RCLCPP_INFO(this->get_logger(), "[Init] Walk initialized after %d ticks", init_tick_count_);
-                auto msg = std_msgs::msg::Bool();
-                msg.data = true;
-                initial_pub->publish(msg);
+                // auto msg = std_msgs::msg::Bool();
+                // msg.data = true;
+                // initial_pub->publish(msg);
             }
         }
         else
@@ -420,6 +424,21 @@ void MainControlNode::handle_write_packet()
 
 void MainControlNode::walkCallback(const roa_interfaces::msg::MotorCommandArray::SharedPtr msg)
 {
+    if(!walk_initialized_)
+    {
+        static int counter = 0;
+        counter++;
+        auto msg = std_msgs::msg::Bool();
+        msg.data = false;
+        initial_pub->publish(msg);
+        if (counter > 2) return
+    }
+    else
+    {
+        auto msg = std_msgs::msg::Bool();
+        msg.data = true;
+        initial_pub->publish(msg);
+    }
 
     if (msg->commands.size() != static_cast<int>(all_motors_.size()))
     {
