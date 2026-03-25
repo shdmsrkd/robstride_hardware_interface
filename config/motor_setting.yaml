@@ -1,12 +1,17 @@
 hardware_interface_node:
   ros__parameters:
-    can_interfaces: ["can0", "can1"]
+    can_interfaces: ["can1", "can2"]
     baud_rate: 1000000
 
-    can0:
-      motor_ids: [7]
-      motor_type: [06]
-
+    # can0:
+    #   motor_ids: [11, 13, 15, 17, 19, 21]
+    #   motor_type: [04, 03, 03, 04, 06, 06]
     can1:
-      motor_ids: [1]
-      motor_type: [06]
+      motor_ids: [9, 11, 13, 15, 17, 19, 21]
+      motor_type: [06, 04, 03, 03, 04, 06, 06]
+
+    can2:
+      motor_ids: [10, 12, 14, 16, 18, 20]
+      motor_type: [04, 03, 03, 04, 06, 06]
+
+

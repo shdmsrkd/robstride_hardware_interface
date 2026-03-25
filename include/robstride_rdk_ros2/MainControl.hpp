@@ -8,6 +8,13 @@
 #include "CanTransport.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "roa_interfaces/msg/motor_state.hpp"
+#include "roa_interfaces/msg/motor_state_array.hpp"
+#include "roa_interfaces/msg/motor_command.hpp"
+#include "roa_interfaces/msg/motor_command_array.hpp"
+#include <unordered_map>
+
+#include <mutex>
 #include <memory>
 
 enum class ControlState
@@ -16,13 +23,6 @@ enum class ControlState
     READ_PACKET
 };
 
-struct MotorCommand {
-    float position;
-    float velocity;
-    float torque;
-    float kp;
-    float kd;
-};
 
 class MainControlNode : public rclcpp_lifecycle::LifecycleNode {
 public:
@@ -40,7 +40,7 @@ public:
 private:
     // 주기적으로 실행될 제어 루프
     void control_loop();
-    void walkCallback(const std_msgs::msg::Float32MultiArray::SharedPtr msg);
+    void walkCallback(const roa_interfaces::msg::MotorCommandArray::SharedPtr msg);
     void torqueCallback(const std_msgs::msg::Bool::SharedPtr msg);
 
     void handle_read_packet();
@@ -55,14 +55,15 @@ private:
     std::vector<CanBusGroup> can_groups_;
     std::vector<std::shared_ptr<RobStrideMotor>> all_motors_;  // 모든 CAN의 모터를 순서대로 보관
     rclcpp::TimerBase::SharedPtr timer_;
-    rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr walk_sub;
+    rclcpp::Subscription<roa_interfaces::msg::MotorCommandArray>::SharedPtr walk_sub;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr torque_sub;
-    rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr state_pub;
+    rclcpp::Publisher<roa_interfaces::msg::MotorStateArray>::SharedPtr state_pub;
+    rclcpp::Publisher<roa_interfaces::msg::MotorStateArray>::SharedPtr state_pub_1;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr initial_pub;
 
     ControlState current_state;
 
-    std::vector<MotorCommand> motor_commands_;
+    // roa_interfaces::msg::MotorCommandArray motor_commands_;
     std::mutex command_mutex_;
 
     // 초기 set 자세
@@ -71,6 +72,19 @@ private:
     std::vector<float> start_positions_;
     int init_tick_count_ = 0;
     static constexpr int INIT_TOTAL_TICKS = 100;
+
+
+    // ROA IFACE ID PACKIT MAPPER
+    // motor_id -> packet index
+    std::unordered_map<uint16_t, size_t> motor_id_to_index_;
+
+    // 최종 전송용 packet 버퍼 (all_motors_ 순서와 동일)
+    roa_interfaces::msg::MotorCommandArray packet_commands_;
+
+    // packet slot이 한 번이라도 채워졌는지
+    bool packet_initialized_{false};
+
+    // std::mutex command_mutex_;
 };
 
 #endif // MAIN_CONTROL_HPP
