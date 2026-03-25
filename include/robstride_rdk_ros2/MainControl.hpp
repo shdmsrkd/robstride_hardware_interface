@@ -12,8 +12,9 @@
 #include "roa_interfaces/msg/motor_state_array.hpp"
 #include "roa_interfaces/msg/motor_command.hpp"
 #include "roa_interfaces/msg/motor_command_array.hpp"
-#include "roa_interfaces/msg/motor_state.hpp"
+#include <unordered_map>
 
+#include <mutex>
 #include <memory>
 
 enum class ControlState
@@ -62,7 +63,7 @@ private:
 
     ControlState current_state;
 
-    roa_interfaces::msg::MotorCommandArray motor_commands_;
+    // roa_interfaces::msg::MotorCommandArray motor_commands_;
     std::mutex command_mutex_;
 
     // 초기 set 자세
@@ -71,6 +72,19 @@ private:
     std::vector<float> start_positions_;
     int init_tick_count_ = 0;
     static constexpr int INIT_TOTAL_TICKS = 100;
+
+
+    // ROA IFACE ID PACKIT MAPPER
+    // motor_id -> packet index
+    std::unordered_map<uint16_t, size_t> motor_id_to_index_;
+
+    // 최종 전송용 packet 버퍼 (all_motors_ 순서와 동일)
+    roa_interfaces::msg::MotorCommandArray packet_commands_;
+
+    // packet slot이 한 번이라도 채워졌는지
+    bool packet_initialized_{false};
+
+    // std::mutex command_mutex_;
 };
 
 #endif // MAIN_CONTROL_HPP
