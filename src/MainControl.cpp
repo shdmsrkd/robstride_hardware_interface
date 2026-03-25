@@ -135,6 +135,7 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
 
     // Publisher 초기화
     state_pub = this->create_publisher<roa_interfaces::msg::MotorStateArray>("/hardware_interface/state", motor_status_qos);
+    state_pub_1 = this->create_publisher<roa_interfaces::msg::MotorStateArray>("/hardware_interface/state_1", motor_status_qos);
     initial_pub = this->create_publisher<std_msgs::msg::Bool>("walk_initialized", cmd_qos);
 
     // 파라미터 초기화
@@ -292,10 +293,15 @@ void MainControlNode::handle_read_packet()
             }
         }
     }
-
+    // static auto last_msg = roa_interfaces::msg::MotorStateArray();
+    // last_msg.states.resize(static_cast<int>(all_motors_.size()));
     auto msg = roa_interfaces::msg::MotorStateArray();
+    static int seq = 0;
     msg.states.resize(static_cast<int>(all_motors_.size()));
-
+    msg.header.stamp = this->get_clock()->now();
+    msg.header.frame_id = "motor_states";
+    
+    
     int data_idx = 0;
 
     for (size_t i = 0; i < all_motors_.size(); i++)
@@ -313,7 +319,7 @@ void MainControlNode::handle_read_packet()
             msg.states[i].motor_id = all_motors_[i]->getMotorId();
             // Col 0: position
             msg.states[i].position = wrapped_pos;
-
+           
             // Col 1: velocity
             msg.states[i].velocity = static_cast<float>(all_motors_[i]->getVelocity());
 
@@ -330,7 +336,16 @@ void MainControlNode::handle_read_packet()
         }
     }
     state_pub->publish(msg);
-
+    // for(size_t i = 0; i < all_motors_.size(); i++)
+    // {
+    //     double dt = (rclcpp::Time(msg.header.stamp) - rclcpp::Time(last_msg.header.stamp)).seconds();
+    //     if (dt > 1e-6)
+    //     {
+    //         msg.states[i].velocity = (msg.states[i].position - last_msg.states[i].position) / dt;
+    //     }
+    // }   
+    // state_pub_1->publish(msg);
+    // last_msg = msg;
     transition_to(ControlState::WRITE_PACKET);
 }
 
@@ -424,21 +439,21 @@ void MainControlNode::handle_write_packet()
 
 void MainControlNode::walkCallback(const roa_interfaces::msg::MotorCommandArray::SharedPtr msg)
 {
-    if(!walk_initialized_)
-    {
-        static int counter = 0;
-        counter++;
-        auto msg = std_msgs::msg::Bool();
-        msg.data = false;
-        initial_pub->publish(msg);
-        if (counter > 2) return
-    }
-    else
-    {
-        auto msg = std_msgs::msg::Bool();
-        msg.data = true;
-        initial_pub->publish(msg);
-    }
+    // if(!walk_initialized_)
+    // {
+    //     static int counter = 0;
+    //     counter++;
+    //     auto msg = std_msgs::msg::Bool();
+    //     msg.data = false;
+    //     initial_pub->publish(msg);
+    //     if (counter > 2) return
+    // }
+    // else
+    // {
+    //     auto msg = std_msgs::msg::Bool();
+    //     msg.data = true;
+    //     initial_pub->publish(msg);
+    // }
 
     if (msg->commands.size() != static_cast<int>(all_motors_.size()))
     {

@@ -8,11 +8,12 @@
 #include "CanTransport.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "roa_interfaces/msg/motor_state.hpp"
 #include "roa_interfaces/msg/motor_state_array.hpp"
 #include "roa_interfaces/msg/motor_command.hpp"
 #include "roa_interfaces/msg/motor_command_array.hpp"
 #include "roa_interfaces/msg/motor_state.hpp"
-#include "roa_interfaces/msg/motor_state_array.hpp"
+
 #include <memory>
 
 enum class ControlState
@@ -56,6 +57,7 @@ private:
     rclcpp::Subscription<roa_interfaces::msg::MotorCommandArray>::SharedPtr walk_sub;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr torque_sub;
     rclcpp::Publisher<roa_interfaces::msg::MotorStateArray>::SharedPtr state_pub;
+    rclcpp::Publisher<roa_interfaces::msg::MotorStateArray>::SharedPtr state_pub_1;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr initial_pub;
 
     ControlState current_state;
