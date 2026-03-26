@@ -16,7 +16,7 @@ static float wrapToPi(float angle)
 using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
 MainControlNode::MainControlNode(const rclcpp::NodeOptions & options)
-    : LifecycleNode("main_control_node", options), current_state(ControlState::WRITE_PACKET)
+    : LifecycleNode("main_control_node", options), current_state(ControlState::READ_PACKET)
 {
     RCLCPP_INFO(this->get_logger(), "MainControlNode created");
 }
@@ -242,6 +242,13 @@ CallbackReturn MainControlNode::on_activate(const rclcpp_lifecycle::State &)
         }
     }
 
+    // init 상태 리셋
+    walk_initialized_ = false;
+    start_positions_captured_ = false;
+    init_tick_count_ = 0;
+
+    // FSM 시작은 READ부터
+    current_state = ControlState::READ_PACKET;
     // 제어 루프 타이머 시작 (200Hz, WRITE/READ 번갈아 실행하여 제어주기 100Hz)
     timer_ = this->create_wall_timer(
         std::chrono::milliseconds(5),
@@ -386,82 +393,109 @@ void MainControlNode::handle_write_packet()
 {
     std::lock_guard<std::mutex> lock(command_mutex_);
 
-    if (packet_initialized_)
-    {
-        if (!walk_initialized_)
-        {
-            init_tick_count_++;
-            float alpha = static_cast<float>(init_tick_count_) / static_cast<float>(INIT_TOTAL_TICKS);
-            if (alpha > 1.0f) alpha = 1.0f;
-
-            for (size_t i = 0; i < all_motors_.size(); i++)
-            {
-                float start_raw = start_positions_[i];
-                float target_pos = wrapToPi(packet_commands_.commands[i].position);
-
-                float diff = target_pos - wrapToPi(start_raw);
-                if (diff > static_cast<float>(M_PI))  diff -= 2.0f * static_cast<float>(M_PI);
-                if (diff < -static_cast<float>(M_PI)) diff += 2.0f * static_cast<float>(M_PI);
-
-                float interpolated_target = start_raw + alpha * diff;
-
-                all_motors_[i]->sendMotionCommand(
-                    packet_commands_.commands[i].torque,
-                    interpolated_target,
-                    packet_commands_.commands[i].velocity,
-                    packet_commands_.commands[i].kp,
-                    packet_commands_.commands[i].kd);
-
-                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 200,
-                    "[Init] packet_index=%zu motor_id=%u start=%.3f target=%.3f cmd=%.3f",
-                    i,
-                    packet_commands_.commands[i].motor_id,
-                    start_raw,
-                    target_pos,
-                    interpolated_target);
-            }
-
-            if (init_tick_count_ >= INIT_TOTAL_TICKS)
-            {
-                walk_initialized_ = true;
-                RCLCPP_INFO(this->get_logger(), "[Init] Walk initialized after %d ticks", init_tick_count_);
-            }
-        }
-        else
-        {
-            for (size_t i = 0; i < all_motors_.size(); i++)
-            {
-                float raw_pos = static_cast<float>(all_motors_[i]->getPosition());
-                float target_pos = wrapToPi(packet_commands_.commands[i].position);
-
-                float diff = target_pos - wrapToPi(raw_pos);
-                if (diff > static_cast<float>(M_PI))  diff -= 2.0f * static_cast<float>(M_PI);
-                if (diff < -static_cast<float>(M_PI)) diff += 2.0f * static_cast<float>(M_PI);
-
-                float normalized_target = raw_pos + diff;
-
-                all_motors_[i]->sendMotionCommand(
-                    packet_commands_.commands[i].torque,
-                    normalized_target,
-                    packet_commands_.commands[i].velocity,
-                    packet_commands_.commands[i].kp,
-                    packet_commands_.commands[i].kd);
-
-                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
-                    "[Write Packet] packet_index=%zu motor_id=%u raw=%.3f target=%.3f diff=%.3f cmd=%.3f",
-                    i,
-                    packet_commands_.commands[i].motor_id,
-                    raw_pos,
-                    target_pos,
-                    diff,
-                    normalized_target);
-            }
-        }
-    }
-    else
+    if (!packet_initialized_)
     {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
             "[Write Packet] packet_commands_ not initialized yet");
+        transition_to(ControlState::READ_PACKET);
+        return;
+    }
+
+    if (!walk_initialized_)
+    {
+        // init 시작 시점의 실제 모터 위치를 한 번만 캡처
+        if (!start_positions_captured_)
+        {
+            start_positions_.resize(all_motors_.size(), 0.0f);
+
+            for (size_t i = 0; i < all_motors_.size(); ++i)
+            {
+                start_positions_[i] = static_cast<float>(all_motors_[i]->getPosition());
+            }
+
+            start_positions_captured_ = true;
+            init_tick_count_ = 0;
+
+            RCLCPP_INFO(this->get_logger(),
+                "[Init] Captured start positions for %zu motors",
+                all_motors_.size());
+        }
+
+        init_tick_count_++;
+
+        float alpha = static_cast<float>(init_tick_count_) /
+                      static_cast<float>(INIT_TOTAL_TICKS);
+        if (alpha > 1.0f)
+        {
+            alpha = 1.0f;
+        }
+
+        for (size_t i = 0; i < all_motors_.size(); i++)
+        {
+            float start_raw  = start_positions_[i];
+            float target_pos = wrapToPi(packet_commands_.commands[i].position);
+
+            float diff = target_pos - wrapToPi(start_raw);
+            if (diff > static_cast<float>(M_PI))  diff -= 2.0f * static_cast<float>(M_PI);
+            if (diff < -static_cast<float>(M_PI)) diff += 2.0f * static_cast<float>(M_PI);
+
+            float interpolated_target = start_raw + alpha * diff;
+
+            all_motors_[i]->sendMotionCommand(
+                packet_commands_.commands[i].torque,
+                interpolated_target,
+                packet_commands_.commands[i].velocity,
+                packet_commands_.commands[i].kp,
+                packet_commands_.commands[i].kd);
+
+            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 200,
+                "[Init] packet_index=%zu motor_id=%u start=%.3f target=%.3f cmd=%.3f alpha=%.3f",
+                i,
+                packet_commands_.commands[i].motor_id,
+                start_raw,
+                target_pos,
+                interpolated_target,
+                alpha);
+        }
+
+        if (init_tick_count_ >= INIT_TOTAL_TICKS)
+        {
+            walk_initialized_ = true;
+            RCLCPP_INFO(this->get_logger(),
+                "[Init] Walk initialized after %d ticks", init_tick_count_);
+        }
+
+        transition_to(ControlState::READ_PACKET);
+        return;
+    }
+
+    // 정상 write
+    for (size_t i = 0; i < all_motors_.size(); i++)
+    {
+        float raw_pos    = static_cast<float>(all_motors_[i]->getPosition());
+        float target_pos = wrapToPi(packet_commands_.commands[i].position);
+
+        float diff = target_pos - wrapToPi(raw_pos);
+        if (diff > static_cast<float>(M_PI))  diff -= 2.0f * static_cast<float>(M_PI);
+        if (diff < -static_cast<float>(M_PI)) diff += 2.0f * static_cast<float>(M_PI);
+
+        float normalized_target = raw_pos + diff;
+
+        all_motors_[i]->sendMotionCommand(
+            packet_commands_.commands[i].torque,
+            normalized_target,
+            packet_commands_.commands[i].velocity,
+            packet_commands_.commands[i].kp,
+            packet_commands_.commands[i].kd);
+
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
+            "[Write Packet] packet_index=%zu motor_id=%u raw=%.3f target=%.3f diff=%.3f cmd=%.3f",
+            i,
+            packet_commands_.commands[i].motor_id,
+            raw_pos,
+            target_pos,
+            diff,
+            normalized_target);
     }
 
     transition_to(ControlState::READ_PACKET);
@@ -469,23 +503,9 @@ void MainControlNode::handle_write_packet()
 
 void MainControlNode::walkCallback(const roa_interfaces::msg::MotorCommandArray::SharedPtr msg)
 {
-    if (!walk_initialized_)
-    {
-        static int counter = 0;
-        counter++;
-
-        std_msgs::msg::Bool init_msg;
-        init_msg.data = false;
-        initial_pub->publish(init_msg);
-
-        if (counter > 2) return;
-    }
-    else
-    {
-        std_msgs::msg::Bool init_msg;
-        init_msg.data = true;
-        initial_pub->publish(init_msg);
-    }
+    std_msgs::msg::Bool init_msg;
+    init_msg.data = walk_initialized_;
+    initial_pub->publish(init_msg);
 
     std::lock_guard<std::mutex> lock(command_mutex_);
 
@@ -503,7 +523,7 @@ void MainControlNode::walkCallback(const roa_interfaces::msg::MotorCommandArray:
             continue;
         }
 
-        size_t packet_index = it->second;
+        const size_t packet_index = it->second;
         packet_commands_.commands[packet_index] = cmd;
 
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
@@ -511,6 +531,12 @@ void MainControlNode::walkCallback(const roa_interfaces::msg::MotorCommandArray:
             cmd.motor_id, packet_index,
             cmd.position, cmd.velocity, cmd.kp, cmd.kd, cmd.torque);
     }
+
+    if (!packet_initialized_)
+    {
+        RCLCPP_INFO(this->get_logger(), "[Walk Callback] First valid command received");
+    }
+
 
     packet_initialized_ = true;
 }
