@@ -9,6 +9,10 @@
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include <memory>
+#include <iostream>
+#include <fstream>
+#include <iomanip>
+#include <mutex>
 
 enum class ControlState
 {
@@ -47,6 +51,8 @@ private:
     void handle_write_packet();
     void transition_to(ControlState new_state);
     void initParameters();
+
+    void toCSV(float pos, float vel);
 
     void canSetup();
     std::string execute_command(const std::string& cmd);

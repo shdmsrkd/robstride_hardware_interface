@@ -197,8 +197,9 @@ CallbackReturn MainControlNode::on_activate(const rclcpp_lifecycle::State &)
     }
 
     // 제어 루프 타이머 시작 (200Hz, WRITE/READ 번갈아 실행하여 제어주기 100Hz)
+    // 테스트 용으로 1ms로 설정하여 500Hz로 실행, 실제 제어주기에 맞게 조정 필요
     timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(5),
+        std::chrono::milliseconds(2),
         std::bind(&MainControlNode::control_loop, this));
 
     RCLCPP_INFO(this->get_logger(), "[Activate] Activated successfully with %zu motors", all_motors_.size());
@@ -313,6 +314,8 @@ void MainControlNode::handle_read_packet()
 
             // Col 1: velocity
             msg.data[data_idx++] = static_cast<float>(all_motors_[i]->getVelocity());
+
+            toCSV(static_cast<float>(wrapped_pos), static_cast<float>(all_motors_[i]->getVelocity()));
         }
         else
         {
@@ -490,6 +493,59 @@ void MainControlNode::torqueCallback(const std_msgs::msg::Bool::SharedPtr msg)
             }
         }
     }
+}
+
+void MainControlNode::toCSV(float pos, float vel)
+{
+  static std::ofstream csv_file("motor_data.csv");
+
+  if(!csv_file.is_open())
+  {
+    std::cerr << "Failed to open CSV file for writing!" << std::endl;
+    return;
+  }
+
+  csv_file << "Timestamp(ms),Position(rad),Velocity(rad/s)" << std::endl;
+
+  static bool initialized = false;
+
+  if (!initialized)
+  {
+    pos = 0.0f;
+    vel = 0.0f;
+
+    initialized = true;
+  }
+
+  static int timestamp = 0;
+
+  csv_file << std::fixed << std::setprecision(5);
+  csv_file << timestamp << "," << pos << "," << vel << "\n";
+
+  std::cout << "Converting data to CSV..." << std::endl;
+
+  if(timestamp >= 10000) // 10초 동안 데이터 기록 후 종료
+  {
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+
+    csv_file.close();
+  }
+  else
+  {
+    timestamp += 2;
+  }
+
 }
 
 // 메인 함수
