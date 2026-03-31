@@ -459,14 +459,6 @@ void MainControlNode::handle_read_packet()
     msg.header.stamp = this->get_clock()->now();
     msg.header.frame_id = "motor_states";
 
-    for (size_t i = 0; i < all_motors_.size(); ++i)
-    msg.layout.dim[1].label = "width";
-    msg.layout.dim[1].size = width_cols;
-    msg.layout.dim[1].stride = width_cols;
-
-    msg.data.resize(height_rows * width_cols);
-    int data_idx = 0;
-
     auto current_time = std::chrono::steady_clock::now();
     float dt_sec = 0.01f;
     if (velocity_filter_time_initialized_)
@@ -513,7 +505,7 @@ void MainControlNode::handle_read_packet()
             msg.states[i].position = wrapToPi(static_cast<float>(all_motors_[i]->getPosition()));
             msg.states[i].velocity = static_cast<float>(all_motors_[i]->getVelocity());
             msg.states[i].current  = static_cast<float>(all_motors_[i]->getCurrent());
-            
+
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
                 "[Read] bus=%s packet_index=%zu motor_id=%u update failed (success=%d fail=%d)",
                 packet_index_to_bus_[i].c_str(),

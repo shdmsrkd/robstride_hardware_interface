@@ -92,7 +92,6 @@ private:
     bool canSetup();
     void toCSV(float pos, float vel);
 
-    void canSetup();
     std::string execute_command(const std::string& cmd);
 
     WriteResult safeSendCommand(
