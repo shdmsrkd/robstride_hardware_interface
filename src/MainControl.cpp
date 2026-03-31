@@ -278,6 +278,15 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
         "[Configure] Configured successfully with %zu CAN interfaces, %zu total motors",
         can_groups_.size(), all_motors_.size());
 
+    velocity_filters_.clear();
+    velocity_filters_.reserve(all_motors_.size());
+    for (size_t i = 0; i < all_motors_.size(); i++)
+    {
+        velocity_filters_.emplace_back(23.0f);
+    }
+    last_velocity_filter_time_ = std::chrono::steady_clock::now();
+    velocity_filter_time_initialized_ = false;
+
     return CallbackReturn::SUCCESS;
 }
 
@@ -307,7 +316,6 @@ CallbackReturn MainControlNode::on_activate(const rclcpp_lifecycle::State &)
     start_positions_captured_ = false;
     init_tick_count_ = 0;
     current_state = ControlState::READ_PACKET;
-
     timer_ = this->create_wall_timer(
         std::chrono::milliseconds(5),
         std::bind(&MainControlNode::control_loop, this));
@@ -452,6 +460,27 @@ void MainControlNode::handle_read_packet()
     msg.header.frame_id = "motor_states";
 
     for (size_t i = 0; i < all_motors_.size(); ++i)
+    msg.layout.dim[1].label = "width";
+    msg.layout.dim[1].size = width_cols;
+    msg.layout.dim[1].stride = width_cols;
+
+    msg.data.resize(height_rows * width_cols);
+    int data_idx = 0;
+
+    auto current_time = std::chrono::steady_clock::now();
+    float dt_sec = 0.01f;
+    if (velocity_filter_time_initialized_)
+    {
+        dt_sec = std::chrono::duration<float>(current_time - last_velocity_filter_time_).count();
+    }
+    if (dt_sec <= 0.0f || dt_sec > 0.1f)
+    {
+        dt_sec = 0.01f;
+    }
+    last_velocity_filter_time_ = current_time;
+    velocity_filter_time_initialized_ = true;
+
+    for (size_t i = 0; i < all_motors_.size(); i++)
     {
         msg.states[i].motor_id = all_motors_[i]->getMotorId();
 
@@ -785,8 +814,61 @@ void MainControlNode::torqueCallback(const std_msgs::msg::Bool::SharedPtr msg)
     }
 }
 
-int main(int argc, char **argv)
+void MainControlNode::toCSV(float pos, float vel)
 {
+  static std::ofstream csv_file("motor_data.csv");
+
+  if(!csv_file.is_open())
+  {
+    std::cerr << "Failed to open CSV file for writing!" << std::endl;
+    return;
+  }
+
+  csv_file << "Timestamp(ms),Position(rad),Velocity(rad/s)" << std::endl;
+
+  static bool initialized = false;
+
+  if (!initialized)
+  {
+    pos = 0.0f;
+    vel = 0.0f;
+
+    initialized = true;
+  }
+
+  static int timestamp = 0;
+
+  csv_file << std::fixed << std::setprecision(5);
+  csv_file << timestamp << "," << pos << "," << vel << "\n";
+
+  std::cout << "Converting data to CSV..." << std::endl;
+
+  if(timestamp >= 10000) // 10초 동안 데이터 기록 후 종료
+  {
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+    std::cout << "Finished writing to CSV. Closing file." << std::endl;
+
+    csv_file.close();
+  }
+  else
+  {
+    timestamp += 2;
+  }
+
+}
+
+// 메인 함수
+int main(int argc, char **argv) {
     rclcpp::init(argc, argv);
 
     auto node = std::make_shared<MainControlNode>();

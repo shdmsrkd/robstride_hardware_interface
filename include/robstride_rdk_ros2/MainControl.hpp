@@ -6,6 +6,8 @@
 #include "lifecycle_msgs/msg/transition.hpp"
 #include "RobStrideMotor.hpp"
 #include "CanTransport.hpp"
+#include "filter.hpp"
+#include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "roa_interfaces/msg/motor_state.hpp"
 #include "roa_interfaces/msg/motor_state_array.hpp"
@@ -17,6 +19,11 @@
 #include <memory>
 #include <vector>
 #include <string>
+#include <iostream>
+#include <fstream>
+#include <iomanip>
+#include <mutex>
+#include <chrono>
 
 enum class ControlState
 {
@@ -83,6 +90,9 @@ private:
     void initParameters();
 
     bool canSetup();
+    void toCSV(float pos, float vel);
+
+    void canSetup();
     std::string execute_command(const std::string& cmd);
 
     WriteResult safeSendCommand(
@@ -117,6 +127,11 @@ private:
 
     std::mutex command_mutex_;
 
+    std::vector<Butterworth2ndOrderLPF> velocity_filters_;
+    std::chrono::steady_clock::time_point last_velocity_filter_time_;
+    bool velocity_filter_time_initialized_ = false;
+
+    // 초기 set 자세
     bool walk_initialized_ = false;
     bool start_positions_captured_ = false;
     std::vector<float> start_positions_;

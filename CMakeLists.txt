@@ -17,6 +17,7 @@ add_library(${PROJECT_NAME}_lib
   src/CanTransport.cpp
   src/RobStrideProtocol.cpp
   src/RobStrideMotor.cpp
+  src/filter.cpp
 )
 
 target_include_directories(${PROJECT_NAME}_lib PUBLIC
