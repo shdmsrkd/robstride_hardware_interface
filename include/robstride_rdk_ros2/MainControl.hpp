@@ -137,6 +137,8 @@ private:
     int init_tick_count_ = 0;
     static constexpr int INIT_TOTAL_TICKS = 100;
 
+    bool stabilization_ = false;
+
     std::unordered_map<uint16_t, size_t> motor_id_to_index_;
 
     roa_interfaces::msg::MotorCommandArray packet_commands_;

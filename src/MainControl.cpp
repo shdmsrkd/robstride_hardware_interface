@@ -106,10 +106,10 @@ bool MainControlNode::canSetup()
         }
 
         execute_command("sudo ip link set " + can_name + " down 2>&1");
-        execute_command("sudo ip link set " + can_name +
-                        " up type can bitrate " + std::to_string(baud_rate) + " 2>&1");
+        execute_command("sudo ip link set " + can_name +" type can bitrate " + std::to_string(baud_rate) + " echo off 2>&1");
+        execute_command("sudo ip link set " + can_name + " up 2>&1");
         execute_command("sleep 0.2");
-
+        execute_command("sudo ip link set " + can_name + " txqueuelen 4096 2>&1");
         result = execute_command("ip -details link show " + can_name + " 2>&1");
 
         const bool is_up = (result.find("state UP") != std::string::npos);
@@ -162,12 +162,14 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
 
     initParameters();
 
-    if (!canSetup())
-    {
-        RCLCPP_ERROR(this->get_logger(), "[Configure] CAN setup failed");
-        return CallbackReturn::FAILURE;
-    }
+    // if (!canSetup())
+    // {
+    //     RCLCPP_ERROR(this->get_logger(), "[Configure] CAN setup failed");
+    //     return CallbackReturn::FAILURE;
+    // }
 
+    // Use best_effort so we're compatible with both best_effort and reliable publishers.
+    // If we require reliable here and the publisher is best_effort, we will receive nothing.
     rclcpp::QoS cmd_qos(rclcpp::KeepLast(1));
     cmd_qos.reliable();
 
@@ -311,13 +313,22 @@ CallbackReturn MainControlNode::on_activate(const rclcpp_lifecycle::State &)
             return CallbackReturn::FAILURE;
         }
     }
-
     walk_initialized_ = false;
     start_positions_captured_ = false;
     init_tick_count_ = 0;
+
+    velocity_filters_.clear();
+    velocity_filters_.reserve(all_motors_.size());
+    for (size_t i = 0; i < all_motors_.size(); i++)
+    {
+        velocity_filters_.emplace_back(23.0f);
+    }
+    last_velocity_filter_time_ = std::chrono::steady_clock::now();
+    velocity_filter_time_initialized_ = false;
+
     current_state = ControlState::READ_PACKET;
     timer_ = this->create_wall_timer(
-        std::chrono::milliseconds(5),
+        std::chrono::milliseconds(5), // 50 hz timer
         std::bind(&MainControlNode::control_loop, this));
 
     RCLCPP_INFO(this->get_logger(),
@@ -329,6 +340,10 @@ CallbackReturn MainControlNode::on_activate(const rclcpp_lifecycle::State &)
 
 void MainControlNode::control_loop()
 {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+    "[Loop] current_state=%s",
+    (current_state == ControlState::READ_PACKET ? "READ" : "WRITE"));
+
     static auto last_print_time = std::chrono::steady_clock::now();
     static int write_count = 0;
 
@@ -425,6 +440,9 @@ void MainControlNode::handle_read_packet()
     static int fail_count = 0;
     static int success_count = 0;
 
+    int cycle_fail_count = 0;
+    int cycle_success_count = 0;
+
     std::vector<bool> current_cycle_updated(all_motors_.size(), false);
 
     uint32_t rx_id = 0;
@@ -479,10 +497,17 @@ void MainControlNode::handle_read_packet()
         if (current_cycle_updated[i])
         {
             ++success_count;
+            ++cycle_success_count;
 
             const float wrapped_pos = wrapToPi(static_cast<float>(all_motors_[i]->getPosition()));
-            const float velocity = static_cast<float>(all_motors_[i]->getVelocity());
+            const float raw_velocity = static_cast<float>(all_motors_[i]->getVelocity());
             const float current  = static_cast<float>(all_motors_[i]->getCurrent());
+
+            float velocity = raw_velocity;
+            if (i < velocity_filters_.size())
+            {
+                velocity = velocity_filters_[i].filter(raw_velocity, dt_sec);
+            }
 
             msg.states[i].position = wrapped_pos;
             msg.states[i].velocity = velocity;
@@ -500,10 +525,19 @@ void MainControlNode::handle_read_packet()
         else
         {
             ++fail_count;
+            ++cycle_fail_count;
 
             // 마지막 정상값 유지
             msg.states[i].position = wrapToPi(static_cast<float>(all_motors_[i]->getPosition()));
-            msg.states[i].velocity = static_cast<float>(all_motors_[i]->getVelocity());
+            {
+                const float raw_velocity = static_cast<float>(all_motors_[i]->getVelocity());
+                float velocity = raw_velocity;
+                if (i < velocity_filters_.size())
+                {
+                    velocity = velocity_filters_[i].filter(raw_velocity, dt_sec);
+                }
+                msg.states[i].velocity = velocity;
+            }
             msg.states[i].current  = static_cast<float>(all_motors_[i]->getCurrent());
 
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
@@ -516,7 +550,11 @@ void MainControlNode::handle_read_packet()
         }
     }
 
+    stabilization_ = (cycle_fail_count == 0 && !all_motors_.empty());
+
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[Read] BEFORE_PUBLISH");
     state_pub->publish(msg);
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000, "[Read] AFTER_PUBLISH");
     transition_to(ControlState::WRITE_PACKET);
 }
 
@@ -537,7 +575,14 @@ void MainControlNode::logWriteSummaryThrottle()
 
 void MainControlNode::handle_write_packet()
 {
+    RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+    "[Write] ENTER packet_initialized=%s walk_initialized=%s",
+    packet_initialized_ ? "true" : "false",
+    walk_initialized_ ? "true" : "false");
+    float alpha = 0.0f;
+
     std::lock_guard<std::mutex> lock(command_mutex_);
+
 
     if (!packet_initialized_)
     {
@@ -549,11 +594,20 @@ void MainControlNode::handle_write_packet()
 
     if (!walk_initialized_ && !start_positions_captured_)
     {
+        if (!stabilization_)
+        {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                "[Init] Waiting for stabilization before capturing start positions");
+            transition_to(ControlState::READ_PACKET);
+            return;
+        }
+
         start_positions_.resize(all_motors_.size(), 0.0f);
 
         for (size_t i = 0; i < all_motors_.size(); ++i)
         {
             start_positions_[i] = static_cast<float>(all_motors_[i]->getPosition());
+            RCLCPP_INFO(this->get_logger(), "[Init] Captured Motor %zu at position %.3f", i, start_positions_[i]);
         }
 
         start_positions_captured_ = true;
@@ -562,10 +616,12 @@ void MainControlNode::handle_write_packet()
         RCLCPP_INFO(this->get_logger(),
             "[Init] Captured start positions for %zu motors",
             all_motors_.size());
+
+        // transition_to(ControlState::READ_PACKET);
+        // return;
     }
 
-    float alpha = 1.0f;
-    if (!walk_initialized_)
+    else if (!walk_initialized_)
     {
         ++init_tick_count_;
         alpha = static_cast<float>(init_tick_count_) /

@@ -21,8 +21,10 @@ void Butterworth2ndOrderLPF::updateCoefficients(float sample_rate_hz)
   const float pi = 3.14159265358979323846f;
   float omega = 2.0f * pi * cutoff_hz_ / sample_rate_hz;
 
-  if (omega > pi) {
-    omega = pi;
+  // Avoid omega==pi (Nyquist) which can yield marginally stable coefficients.
+  const float omega_max = 0.99f * pi;
+  if (omega > omega_max) {
+    omega = omega_max;
   }
 
   const float cos_omega = std::cos(omega);

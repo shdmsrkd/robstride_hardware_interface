@@ -10,5 +10,3 @@ hardware_interface_node:
     can_left_leg:
       motor_ids: [10, 12, 14, 16, 18, 20]
       motor_type: [04, 03, 03, 04, 06, 06]
-
-
