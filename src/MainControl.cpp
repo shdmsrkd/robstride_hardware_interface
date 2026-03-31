@@ -480,6 +480,11 @@ void MainControlNode::handle_read_packet()
         {
             ++fail_count;
 
+            // 마지막 정상값 유지
+            msg.states[i].position = wrapToPi(static_cast<float>(all_motors_[i]->getPosition()));
+            msg.states[i].velocity = static_cast<float>(all_motors_[i]->getVelocity());
+            msg.states[i].current  = static_cast<float>(all_motors_[i]->getCurrent());
+            
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
                 "[Read] bus=%s packet_index=%zu motor_id=%u update failed (success=%d fail=%d)",
                 packet_index_to_bus_[i].c_str(),
