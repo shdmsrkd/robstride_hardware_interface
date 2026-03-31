@@ -175,6 +175,16 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
 
     RCLCPP_INFO(this->get_logger(), "[Configure] Configured successfully with %zu CAN interfaces, %zu total motors",
         can_groups_.size(), all_motors_.size());
+
+    velocity_filters_.clear();
+    velocity_filters_.reserve(all_motors_.size());
+    for (size_t i = 0; i < all_motors_.size(); i++)
+    {
+        velocity_filters_.emplace_back(23.0f);
+    }
+    last_velocity_filter_time_ = std::chrono::steady_clock::now();
+    velocity_filter_time_initialized_ = false;
+
     return CallbackReturn::SUCCESS;
 }
 
@@ -298,6 +308,19 @@ void MainControlNode::handle_read_packet()
     msg.data.resize(height_rows * width_cols);
     int data_idx = 0;
 
+    auto current_time = std::chrono::steady_clock::now();
+    float dt_sec = 0.01f;
+    if (velocity_filter_time_initialized_)
+    {
+        dt_sec = std::chrono::duration<float>(current_time - last_velocity_filter_time_).count();
+    }
+    if (dt_sec <= 0.0f || dt_sec > 0.1f)
+    {
+        dt_sec = 0.01f;
+    }
+    last_velocity_filter_time_ = current_time;
+    velocity_filter_time_initialized_ = true;
+
     for (size_t i = 0; i < all_motors_.size(); i++)
     {
         if (current_cycle_updated[i])
@@ -306,16 +329,22 @@ void MainControlNode::handle_read_packet()
             std::lock_guard<std::mutex> lock(command_mutex_);
             float desired_pos = (i < motor_commands_.size()) ? motor_commands_[i].position : 0.0f;
             float wrapped_pos = wrapToPi(static_cast<float>(all_motors_[i]->getPosition()));
+            float raw_vel = static_cast<float>(all_motors_[i]->getVelocity());
+            float filtered_vel = raw_vel;
+            if (i < velocity_filters_.size())
+            {
+                filtered_vel = velocity_filters_[i].filter(raw_vel, dt_sec);
+            }
             RCLCPP_INFO(this->get_logger(), "[Red Packet] Motor[%zu] Pos: %.3f, Vel: %.3f, Current: %.3f A, Desired Pos: %.3f",
-            i, wrapped_pos, (float)all_motors_[i]->getVelocity(), (float)all_motors_[i]->getCurrent(), desired_pos);
+            i, wrapped_pos, raw_vel, (float)all_motors_[i]->getCurrent(), desired_pos);
 
             // Col 0: position
             msg.data[data_idx++] = wrapped_pos;
 
             // Col 1: velocity
-            msg.data[data_idx++] = static_cast<float>(all_motors_[i]->getVelocity());
+            msg.data[data_idx++] = filtered_vel;
 
-            toCSV(static_cast<float>(wrapped_pos), static_cast<float>(all_motors_[i]->getVelocity()));
+            toCSV(static_cast<float>(wrapped_pos), filtered_vel);
         }
         else
         {

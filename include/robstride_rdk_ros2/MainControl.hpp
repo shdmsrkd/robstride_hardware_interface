@@ -6,6 +6,7 @@
 #include "lifecycle_msgs/msg/transition.hpp"
 #include "RobStrideMotor.hpp"
 #include "CanTransport.hpp"
+#include "filter.hpp"
 #include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include <memory>
@@ -13,6 +14,7 @@
 #include <fstream>
 #include <iomanip>
 #include <mutex>
+#include <chrono>
 
 enum class ControlState
 {
@@ -70,6 +72,10 @@ private:
 
     std::vector<MotorCommand> motor_commands_;
     std::mutex command_mutex_;
+
+    std::vector<Butterworth2ndOrderLPF> velocity_filters_;
+    std::chrono::steady_clock::time_point last_velocity_filter_time_;
+    bool velocity_filter_time_initialized_ = false;
 
     // 초기 set 자세
     bool walk_initialized_ = false;
