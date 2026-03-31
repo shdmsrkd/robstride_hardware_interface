@@ -76,49 +76,88 @@ void CanTransport::close()
     }
 }
 
+// ENOBUFS 3회 retry 제거 버전 
 bool CanTransport::send(uint32_t can_id, const std::vector<uint8_t>& data)
 {
-    // 소캣이 열려있는지, 데이터 크기가 8바이트 이하인지 확인 (표준 CAN 프레임은 최대 8바이트)
-    if (socket_fd_ < 0) return false;
-    if (data.size() > 8) {
-        std::cerr << "Error: Data size > 8 bytes" << std::endl;
+    if (socket_fd_ < 0)
+    {
+        errno = ENOTCONN;
         return false;
     }
 
-    // CAN 프레임 구성
-    struct can_frame frame;
-    frame.can_id = can_id | CAN_EFF_FLAG; // 항상 확장 프레임 사용
+    if (data.size() > 8)
+    {
+        errno = EINVAL;
+        return false;
+    }
+
+    struct can_frame frame{};
+    frame.can_id = can_id | CAN_EFF_FLAG;
     frame.can_dlc = static_cast<uint8_t>(data.size());
     std::memcpy(frame.data, data.data(), data.size());
 
     std::lock_guard<std::mutex> lock(mutex_);
 
-    // ENOBUFS 발생 시 최대 3회 재시도 (CAN TX 버퍼 오버플로 대응)
-    constexpr int max_retries = 3;
-    for (int attempt = 0; attempt < max_retries; attempt++)
+    const int nbytes = write(socket_fd_, &frame, sizeof(frame));
+    if (nbytes == static_cast<int>(sizeof(frame)))
     {
-        int nbytes = write(socket_fd_, &frame, sizeof(frame));
-        if (nbytes == sizeof(frame))
-        {
-            return true;
-        }
-
-        if (errno == ENOBUFS)
-        {
-            // 버퍼가 가득 찬 경우 잠시 대기 후 재시도
-            std::this_thread::sleep_for(std::chrono::microseconds(500));
-            continue;
-        }
-        else
-        {
-            perror("Write failed");
-            return false;
-        }
+        return true;
     }
 
-    std::cerr << "Write failed after " << max_retries << " retries (ENOBUFS)" << std::endl;
+    // 실패 시 errno는 write()가 세팅한 값을 그대로 유지
+    if (nbytes < 0)
+    {
+        return false;
+    }
+
+    // write가 일부만 쓴 비정상 케이스
+    errno = EIO;
     return false;
 }
+
+// bool CanTransport::send(uint32_t can_id, const std::vector<uint8_t>& data)
+// {
+//     // 소캣이 열려있는지, 데이터 크기가 8바이트 이하인지 확인 (표준 CAN 프레임은 최대 8바이트)
+//     if (socket_fd_ < 0) return false;
+//     if (data.size() > 8) {
+//         std::cerr << "Error: Data size > 8 bytes" << std::endl;
+//         return false;
+//     }
+
+//     // CAN 프레임 구성
+//     struct can_frame frame;
+//     frame.can_id = can_id | CAN_EFF_FLAG; // 항상 확장 프레임 사용
+//     frame.can_dlc = static_cast<uint8_t>(data.size());
+//     std::memcpy(frame.data, data.data(), data.size());
+
+//     std::lock_guard<std::mutex> lock(mutex_);
+
+//     // ENOBUFS 발생 시 최대 3회 재시도 (CAN TX 버퍼 오버플로 대응)
+//     constexpr int max_retries = 3;
+//     for (int attempt = 0; attempt < max_retries; attempt++)
+//     {
+//         int nbytes = write(socket_fd_, &frame, sizeof(frame));
+//         if (nbytes == sizeof(frame))
+//         {
+//             return true;
+//         }
+
+//         if (errno == ENOBUFS)
+//         {
+//             // 버퍼가 가득 찬 경우 잠시 대기 후 재시도
+//             std::this_thread::sleep_for(std::chrono::microseconds(500));
+//             continue;
+//         }
+//         else
+//         {
+//             perror("Write failed");
+//             return false;
+//         }
+//     }
+
+//     std::cerr << "Write failed after " << max_retries << " retries (ENOBUFS)" << std::endl;
+//     return false;
+// }
 
 bool CanTransport::receive(uint32_t& can_id, std::vector<uint8_t>& data, int timeout_ms)
 {

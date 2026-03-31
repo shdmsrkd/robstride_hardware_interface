@@ -55,9 +55,9 @@ private:
     void loadLimits();
 };
 
-struct CanBusGroup
-{
-    std::string interface_name;
-    std::shared_ptr<CanTransport> transport;
-    std::vector<std::shared_ptr<RobStrideMotor>> motors;
-};
+// struct CanBusGroup
+// {
+//     std::string interface_name;
+//     std::shared_ptr<CanTransport> transport;
+//     std::vector<std::shared_ptr<RobStrideMotor>> motors;
+// };

@@ -11,6 +11,7 @@ find_package(rclcpp REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
 find_package(lifecycle_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(roa_interfaces REQUIRED)
 
 add_library(${PROJECT_NAME}_lib
   src/CanTransport.cpp
@@ -42,6 +43,7 @@ ament_target_dependencies(hardware_interface_node
   rclcpp_lifecycle
   lifecycle_msgs
   std_msgs
+  roa_interfaces
 )
 
 install(TARGETS
