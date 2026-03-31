@@ -48,7 +48,7 @@ private:
     void transition_to(ControlState new_state);
     void initParameters();
 
-    void canSetup();
+    bool canSetup();
     std::string execute_command(const std::string& cmd);
 
     // 멤버 변수

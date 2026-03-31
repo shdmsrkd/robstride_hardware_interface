@@ -3,9 +3,6 @@ hardware_interface_node:
     can_interfaces: ["can_right_leg", "can_left_leg"]
     baud_rate: 1000000
 
-    # can0:
-    #   motor_ids: [11, 13, 15, 17, 19, 21]
-    #   motor_type: [04, 03, 03, 04, 06, 06]
     can_right_leg:
       motor_ids: [9, 11, 13, 15, 17, 19, 21]
       motor_type: [06, 04, 03, 03, 04, 06, 06]

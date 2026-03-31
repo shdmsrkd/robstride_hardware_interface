@@ -70,61 +70,99 @@ std::string MainControlNode::execute_command(const std::string& cmd)
 
 }
 
-void MainControlNode::canSetup()
+bool MainControlNode::canSetup()
 {
-    execute_command("sudo ip link set can0 down");
-    execute_command("sudo ip link set can0 up type can bitrate 1000000");
-    execute_command("sleep 0.5");
+    const auto can_interfaces = get_parameter("can_interfaces").as_string_array();
+    const auto baud_rate = get_parameter("baud_rate").as_int();
 
-    execute_command("sudo ip link set can1 down");
-    execute_command("sudo ip link set can1 up type can bitrate 1000000");
-    execute_command("sleep 0.5");
+    if (can_interfaces.empty())
+    {
+        RCLCPP_ERROR(this->get_logger(), "[CAN Setup] 'can_interfaces' is empty");
+        return false;
+    }
 
-    execute_command("sudo ip link set can2 down");
-    execute_command("sudo ip link set can2 up type can bitrate 1000000");
-    execute_command("sleep 0.5");
+    bool all_ok = true;
 
-    execute_command("sudo ip link set can3 down");
-    execute_command("sudo ip link set can3 up type can bitrate 1000000");
+    for (const auto& can_name : can_interfaces)
+    {
+        RCLCPP_INFO(this->get_logger(),
+            "[CAN Setup] Setting up interface '%s' with bitrate %ld",
+            can_name.c_str(), baud_rate);
 
-    std::string result = execute_command("ip link show can0 2>&1");
-    if(result.find("state UP") != std::string::npos)
-    { RCLCPP_INFO(this->get_logger(), "CAN interface setup successful! 'can0' is activated."); }
-    else
-    { RCLCPP_ERROR(this->get_logger(), "CAN interface setup failed! 'can0' is not activated."); }
+        // 인터페이스 존재 확인
+        std::string result = execute_command("ip link show " + can_name + " 2>&1");
+        if (result.find("does not exist") != std::string::npos ||
+            result.find("Cannot find device") != std::string::npos)
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                "[CAN Setup] Interface '%s' does not exist",
+                can_name.c_str());
+            all_ok = false;
+            continue;
+        }
 
-    result = execute_command("ip link show can1 2>&1");
-    if(result.find("state UP") != std::string::npos)
-    { RCLCPP_INFO(this->get_logger(), "CAN interface setup successful! 'can1' is activated."); }
-    else
-    { RCLCPP_ERROR(this->get_logger(), "CAN interface setup failed! 'can1' is not activated."); }
+        // down
+        execute_command("sudo ip link set " + can_name + " down 2>&1");
 
-    result = execute_command("ip link show can2 2>&1");
-    if(result.find("state UP") != std::string::npos)
-    { RCLCPP_INFO(this->get_logger(), "CAN interface setup successful! 'can2' is activated."); }
-    else
-    { RCLCPP_ERROR(this->get_logger(), "CAN interface setup failed! 'can2' is not activated."); }
+        // bitrate 설정 후 up
+        execute_command(
+            "sudo ip link set " + can_name +
+            " up type can bitrate " + std::to_string(baud_rate) + " 2>&1");
 
-    result = execute_command("ip link show can3 2>&1");
-    if(result.find("state UP") != std::string::npos)
-    { RCLCPP_INFO(this->get_logger(), "CAN interface setup successful! 'can3' is activated."); }
-    else { RCLCPP_ERROR(this->get_logger(), "CAN interface setup failed! 'can3' is not activated."); }
+        // 살짝 대기
+        execute_command("sleep 0.2");
+
+        // 상태 재확인
+        result = execute_command("ip -details link show " + can_name + " 2>&1");
+
+        const bool is_up = (result.find("state UP") != std::string::npos);
+        const bool bitrate_ok =
+            (result.find("bitrate " + std::to_string(baud_rate)) != std::string::npos);
+
+        if (is_up && bitrate_ok)
+        {
+            RCLCPP_INFO(this->get_logger(),
+                "[CAN Setup] '%s' activated successfully (bitrate=%ld)",
+                can_name.c_str(), baud_rate);
+        }
+        else
+        {
+            RCLCPP_ERROR(this->get_logger(),
+                "[CAN Setup] '%s' setup failed. Expected UP and bitrate=%ld",
+                can_name.c_str(), baud_rate);
+            RCLCPP_ERROR(this->get_logger(),
+                "[CAN Setup] Details:\n%s", result.c_str());
+            all_ok = false;
+        }
+    }
+
+    return all_ok;
 }
 
 CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
 {
     RCLCPP_INFO(this->get_logger(), "[Configure] Configuring...");
 
-    canSetup();
+    // 먼저 파라미터 선언/로딩
+    initParameters();
+
+    // 그 다음 실제 파라미터 기반 CAN setup
+    if (!canSetup())
+    {
+        RCLCPP_ERROR(this->get_logger(), "[Configure] CAN setup failed");
+        return CallbackReturn::FAILURE;
+    }
+
     rclcpp::QoS cmd_qos(rclcpp::KeepLast(1));
     cmd_qos.reliable();
+
     rclcpp::QoS motor_status_qos(rclcpp::KeepLast(1));
     motor_status_qos.best_effort();
 
-    // Publisher 초기화
-    state_pub = this->create_publisher<roa_interfaces::msg::MotorStateArray>("/hardware_interface/state", motor_status_qos);
-    // state_pub_1 = this->create_publisher<roa_interfaces::msg::MotorStateArray>("/hardware_interface/state_1", motor_status_qos);
-    initial_pub = this->create_publisher<std_msgs::msg::Bool>("walk_initialized", cmd_qos);
+    state_pub = this->create_publisher<roa_interfaces::msg::MotorStateArray>(
+        "/hardware_interface/state", motor_status_qos);
+    initial_pub = this->create_publisher<std_msgs::msg::Bool>(
+        "walk_initialized", cmd_qos);
 
     walk_sub = this->create_subscription<roa_interfaces::msg::MotorCommandArray>(
         "/hardware_interface/command", cmd_qos,
@@ -135,12 +173,9 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
         "/hardware_interface/etop", 10,
         std::bind(&MainControlNode::torqueCallback, this, std::placeholders::_1)
     );
-    // 파라미터 초기화
-    initParameters();
 
     auto can_interfaces = get_parameter("can_interfaces").as_string_array();
 
-    // 각 CAN 인터페이스별 초기화
     can_groups_.clear();
     all_motors_.clear();
     motor_id_to_index_.clear();
@@ -153,21 +188,25 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
 
         if (!group.transport->open(can_name))
         {
-            RCLCPP_ERROR(this->get_logger(), "[Configure] Failed to open CAN interface '%s'", can_name.c_str());
+            RCLCPP_ERROR(this->get_logger(),
+                "[Configure] Failed to open CAN interface '%s'",
+                can_name.c_str());
             return CallbackReturn::FAILURE;
         }
 
-        // 해당 CAN의 motor_ids, motor_type 가져오기
-        std::vector<int64_t> motor_ids = get_parameter(can_name + ".motor_ids").as_integer_array();
-        std::vector<int64_t> motor_types = get_parameter(can_name + ".motor_type").as_integer_array();
+        std::vector<int64_t> motor_ids =
+            get_parameter(can_name + ".motor_ids").as_integer_array();
+        std::vector<int64_t> motor_types =
+            get_parameter(can_name + ".motor_type").as_integer_array();
 
         if (motor_ids.size() != motor_types.size())
         {
-            RCLCPP_ERROR(this->get_logger(), "[Configure] %s: motor_ids and motor_type size mismatch", can_name.c_str());
+            RCLCPP_ERROR(this->get_logger(),
+                "[Configure] %s: motor_ids and motor_type size mismatch",
+                can_name.c_str());
             return CallbackReturn::FAILURE;
         }
 
-        // 모터 객체 초기화
         for (size_t i = 0; i < motor_ids.size(); i++)
         {
             ActuatorType type = static_cast<ActuatorType>(motor_types[i]);
@@ -177,14 +216,14 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
             group.motors.push_back(motor);
             all_motors_.push_back(motor);
 
-            RCLCPP_INFO(this->get_logger(), "[Configure] %s Motor[%zu] initialized - ID: %d, Type: %ld",
+            RCLCPP_INFO(this->get_logger(),
+                "[Configure] %s Motor[%zu] initialized - ID: %d, Type: %ld",
                 can_name.c_str(), i, id, motor_types[i]);
         }
 
         can_groups_.push_back(std::move(group));
     }
 
-    // motor ID to packit index mapper
     for (size_t i = 0; i < all_motors_.size(); ++i)
     {
         uint16_t id = static_cast<uint16_t>(all_motors_[i]->getMotorId());
@@ -203,7 +242,6 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
             id, i);
     }
 
-    // packet 버퍼 초기화
     packet_commands_.commands.resize(all_motors_.size());
     for (size_t i = 0; i < all_motors_.size(); ++i)
     {
@@ -221,6 +259,7 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
     RCLCPP_INFO(this->get_logger(),
         "[Configure] Configured successfully with %zu CAN interfaces, %zu total motors",
         can_groups_.size(), all_motors_.size());
+
     return CallbackReturn::SUCCESS;
 }
 
