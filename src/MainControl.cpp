@@ -1,7 +1,11 @@
 #include "robstride_rdk_ros2/MainControl.hpp"
+
+#include <array>
+#include <cerrno>
+#include <chrono>
 #include <cmath>
-
-
+#include <cstdio>
+#include <memory>
 
 static float wrapToPi(float angle)
 {
@@ -13,10 +17,11 @@ static float wrapToPi(float angle)
     return angle;
 }
 
-using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+using CallbackReturn =
+    rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
 MainControlNode::MainControlNode(const rclcpp::NodeOptions & options)
-    : LifecycleNode("main_control_node", options), current_state(ControlState::READ_PACKET)
+    : LifecycleNode("main_control_node", options)
 {
     RCLCPP_INFO(this->get_logger(), "MainControlNode created");
 }
@@ -31,7 +36,7 @@ void MainControlNode::initParameters()
     declare_parameter("baud_rate", 1000000);
     declare_parameter<std::vector<std::string>>("can_interfaces", {"can0"});
 
-    auto can_interfaces = get_parameter("can_interfaces").as_string_array();
+    const auto can_interfaces = get_parameter("can_interfaces").as_string_array();
 
     for (const auto& can_name : can_interfaces)
     {
@@ -42,32 +47,32 @@ void MainControlNode::initParameters()
     RCLCPP_INFO(this->get_logger(), "[Configure] Parameters initialized");
     RCLCPP_INFO(this->get_logger(), "[Configure] baud_rate: %ld", get_parameter("baud_rate").as_int());
     RCLCPP_INFO(this->get_logger(), "[Configure] can_interfaces count: %zu", can_interfaces.size());
+
     for (const auto& can_name : can_interfaces)
     {
         auto ids = get_parameter(can_name + ".motor_ids").as_integer_array();
-        auto types = get_parameter(can_name + ".motor_type").as_integer_array();
         RCLCPP_INFO(this->get_logger(), "[Configure] %s: %zu motors", can_name.c_str(), ids.size());
     }
 }
 
 std::string MainControlNode::execute_command(const std::string& cmd)
 {
-    std::array<char, 128> buffer;
+    std::array<char, 256> buffer{};
     std::string result;
 
     std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
-
-    if (!pipe) {
-      RCLCPP_ERROR(this->get_logger(), "popen() 실패! 명령어를 실행할 수 없습니다.");
-      return "";
+    if (!pipe)
+    {
+        RCLCPP_ERROR(this->get_logger(), "popen() failed for command: %s", cmd.c_str());
+        return "";
     }
 
-    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
-      result += buffer.data();
+    while (fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr)
+    {
+        result += buffer.data();
     }
 
     return result;
-
 }
 
 bool MainControlNode::canSetup()
@@ -89,7 +94,6 @@ bool MainControlNode::canSetup()
             "[CAN Setup] Setting up interface '%s' with bitrate %ld",
             can_name.c_str(), baud_rate);
 
-        // 인터페이스 존재 확인
         std::string result = execute_command("ip link show " + can_name + " 2>&1");
         if (result.find("does not exist") != std::string::npos ||
             result.find("Cannot find device") != std::string::npos)
@@ -101,18 +105,11 @@ bool MainControlNode::canSetup()
             continue;
         }
 
-        // down
         execute_command("sudo ip link set " + can_name + " down 2>&1");
-
-        // bitrate 설정 후 up
-        execute_command(
-            "sudo ip link set " + can_name +
-            " up type can bitrate " + std::to_string(baud_rate) + " 2>&1");
-
-        // 살짝 대기
+        execute_command("sudo ip link set " + can_name +
+                        " up type can bitrate " + std::to_string(baud_rate) + " 2>&1");
         execute_command("sleep 0.2");
 
-        // 상태 재확인
         result = execute_command("ip -details link show " + can_name + " 2>&1");
 
         const bool is_up = (result.find("state UP") != std::string::npos);
@@ -139,14 +136,32 @@ bool MainControlNode::canSetup()
     return all_ok;
 }
 
+void MainControlNode::resetRuntimeStates()
+{
+    walk_initialized_ = false;
+    start_positions_captured_ = false;
+    init_tick_count_ = 0;
+    start_positions_.clear();
+
+    packet_initialized_ = false;
+
+    for (auto& group : can_groups_)
+    {
+        group.write_stats = BusWriteStats{};
+    }
+
+    for (auto& motor_stat : motor_write_stats_)
+    {
+        motor_stat = MotorWriteStats{};
+    }
+}
+
 CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
 {
     RCLCPP_INFO(this->get_logger(), "[Configure] Configuring...");
 
-    // 먼저 파라미터 선언/로딩
     initParameters();
 
-    // 그 다음 실제 파라미터 기반 CAN setup
     if (!canSetup())
     {
         RCLCPP_ERROR(this->get_logger(), "[Configure] CAN setup failed");
@@ -161,24 +176,24 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
 
     state_pub = this->create_publisher<roa_interfaces::msg::MotorStateArray>(
         "/hardware_interface/state", motor_status_qos);
+
     initial_pub = this->create_publisher<std_msgs::msg::Bool>(
         "walk_initialized", cmd_qos);
 
     walk_sub = this->create_subscription<roa_interfaces::msg::MotorCommandArray>(
         "/hardware_interface/command", cmd_qos,
-        std::bind(&MainControlNode::walkCallback, this, std::placeholders::_1)
-    );
+        std::bind(&MainControlNode::walkCallback, this, std::placeholders::_1));
 
     torque_sub = this->create_subscription<std_msgs::msg::Bool>(
         "/hardware_interface/etop", 10,
-        std::bind(&MainControlNode::torqueCallback, this, std::placeholders::_1)
-    );
+        std::bind(&MainControlNode::torqueCallback, this, std::placeholders::_1));
 
-    auto can_interfaces = get_parameter("can_interfaces").as_string_array();
+    const auto can_interfaces = get_parameter("can_interfaces").as_string_array();
 
     can_groups_.clear();
     all_motors_.clear();
     motor_id_to_index_.clear();
+    packet_index_to_bus_.clear();
 
     for (const auto& can_name : can_interfaces)
     {
@@ -194,10 +209,8 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
             return CallbackReturn::FAILURE;
         }
 
-        std::vector<int64_t> motor_ids =
-            get_parameter(can_name + ".motor_ids").as_integer_array();
-        std::vector<int64_t> motor_types =
-            get_parameter(can_name + ".motor_type").as_integer_array();
+        const auto motor_ids = get_parameter(can_name + ".motor_ids").as_integer_array();
+        const auto motor_types = get_parameter(can_name + ".motor_type").as_integer_array();
 
         if (motor_ids.size() != motor_types.size())
         {
@@ -207,17 +220,21 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
             return CallbackReturn::FAILURE;
         }
 
-        for (size_t i = 0; i < motor_ids.size(); i++)
+        for (size_t i = 0; i < motor_ids.size(); ++i)
         {
-            ActuatorType type = static_cast<ActuatorType>(motor_types[i]);
-            uint8_t id = static_cast<uint8_t>(motor_ids[i]);
+            const auto type = static_cast<ActuatorType>(motor_types[i]);
+            const auto id = static_cast<uint8_t>(motor_ids[i]);
 
             auto motor = std::make_shared<RobStrideMotor>(group.transport, id, type);
             group.motors.push_back(motor);
             all_motors_.push_back(motor);
 
+            const size_t packet_index = all_motors_.size() - 1;
+            group.global_packet_indices.push_back(packet_index);
+            packet_index_to_bus_.push_back(can_name);
+
             RCLCPP_INFO(this->get_logger(),
-                "[Configure] %s Motor[%zu] initialized - ID: %d, Type: %ld",
+                "[Configure] %s Motor[%zu] initialized - ID: %u, Type: %ld",
                 can_name.c_str(), i, id, motor_types[i]);
         }
 
@@ -226,7 +243,7 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
 
     for (size_t i = 0; i < all_motors_.size(); ++i)
     {
-        uint16_t id = static_cast<uint16_t>(all_motors_[i]->getMotorId());
+        const uint16_t id = static_cast<uint16_t>(all_motors_[i]->getMotorId());
 
         if (motor_id_to_index_.find(id) != motor_id_to_index_.end())
         {
@@ -238,14 +255,14 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
         motor_id_to_index_[id] = i;
 
         RCLCPP_INFO(this->get_logger(),
-            "[Configure] Packet mapper: motor_id=%u -> packet_index=%zu",
-            id, i);
+            "[Configure] Packet mapper: motor_id=%u -> packet_index=%zu (bus=%s)",
+            id, i, packet_index_to_bus_[i].c_str());
     }
 
     packet_commands_.commands.resize(all_motors_.size());
     for (size_t i = 0; i < all_motors_.size(); ++i)
     {
-        uint16_t id = static_cast<uint16_t>(all_motors_[i]->getMotorId());
+        const uint16_t id = static_cast<uint16_t>(all_motors_[i]->getMotorId());
         packet_commands_.commands[i].motor_id = id;
         packet_commands_.commands[i].torque   = 0.0f;
         packet_commands_.commands[i].position = 0.0f;
@@ -254,7 +271,8 @@ CallbackReturn MainControlNode::on_configure(const rclcpp_lifecycle::State &)
         packet_commands_.commands[i].kd       = 0.0f;
     }
 
-    packet_initialized_ = false;
+    motor_write_stats_.assign(all_motors_.size(), MotorWriteStats{});
+    resetRuntimeStates();
 
     RCLCPP_INFO(this->get_logger(),
         "[Configure] Configured successfully with %zu CAN interfaces, %zu total motors",
@@ -267,58 +285,62 @@ CallbackReturn MainControlNode::on_activate(const rclcpp_lifecycle::State &)
 {
     RCLCPP_INFO(this->get_logger(), "[Activate] Activating...");
 
-    // 모든 모터 활성화
-    for (size_t i = 0; i < all_motors_.size(); i++)
+    for (size_t i = 0; i < all_motors_.size(); ++i)
     {
         if (all_motors_[i]->enable())
         {
-            RCLCPP_INFO(this->get_logger(), "[Activate] Motor[%zu] enabled successfully", i);
+            RCLCPP_INFO(this->get_logger(),
+                "[Activate] Motor[%zu] enabled successfully", i);
         }
         else
         {
-            RCLCPP_ERROR(this->get_logger(), "[Activate] Failed to enable motor[%zu]", i);
+            RCLCPP_ERROR(this->get_logger(),
+                "[Activate] Failed to enable motor[%zu] (bus=%s, motor_id=%u)",
+                i,
+                (i < packet_index_to_bus_.size() ? packet_index_to_bus_[i].c_str() : "unknown"),
+                all_motors_[i]->getMotorId());
             return CallbackReturn::FAILURE;
         }
     }
 
-    // init 상태 리셋
     walk_initialized_ = false;
     start_positions_captured_ = false;
     init_tick_count_ = 0;
-
-    // FSM 시작은 READ부터
     current_state = ControlState::READ_PACKET;
-    // 제어 루프 타이머 시작 (200Hz, WRITE/READ 번갈아 실행하여 제어주기 100Hz)
+
     timer_ = this->create_wall_timer(
         std::chrono::milliseconds(5),
         std::bind(&MainControlNode::control_loop, this));
 
-    RCLCPP_INFO(this->get_logger(), "[Activate] Activated successfully with %zu motors", all_motors_.size());
+    RCLCPP_INFO(this->get_logger(),
+        "[Activate] Activated successfully with %zu motors",
+        all_motors_.size());
+
     return CallbackReturn::SUCCESS;
 }
 
 void MainControlNode::control_loop()
 {
-    // Hz 측정 (WRITE 기준으로 제어주기 측정)
     static auto last_print_time = std::chrono::steady_clock::now();
     static int write_count = 0;
 
     if (current_state == ControlState::WRITE_PACKET)
     {
-        write_count++;
-        auto current_time = std::chrono::steady_clock::now();
-        std::chrono::duration<double> elapsed = current_time - last_print_time;
+        ++write_count;
+
+        const auto current_time = std::chrono::steady_clock::now();
+        const std::chrono::duration<double> elapsed = current_time - last_print_time;
 
         if (elapsed.count() >= 1.0)
         {
-            double hz = write_count / elapsed.count();
+            const double hz = write_count / elapsed.count();
             RCLCPP_INFO(this->get_logger(), "Motor Control Rate: %.2f Hz", hz);
             last_print_time = current_time;
             write_count = 0;
         }
     }
 
-    switch(current_state)
+    switch (current_state)
     {
         case ControlState::WRITE_PACKET:
             handle_write_packet();
@@ -334,98 +356,157 @@ void MainControlNode::transition_to(ControlState new_state)
     current_state = new_state;
 }
 
-// 모터 상태값 받기
+const char* MainControlNode::toString(WriteResult result) const
+{
+    switch (result)
+    {
+        case WriteResult::Ok:         return "Ok";
+        case WriteResult::WouldBlock: return "WouldBlock";
+        case WriteResult::BusDown:    return "BusDown";
+        case WriteResult::IoError:    return "IoError";
+        case WriteResult::InvalidArg: return "InvalidArg";
+        default:                      return "Unknown";
+    }
+}
+
+float MainControlNode::computeWrappedCommand(float current_raw_pos, float target_wrapped_pos) const
+{
+    float diff = target_wrapped_pos - wrapToPi(current_raw_pos);
+
+    if (diff > static_cast<float>(M_PI))
+        diff -= 2.0f * static_cast<float>(M_PI);
+    if (diff < -static_cast<float>(M_PI))
+        diff += 2.0f * static_cast<float>(M_PI);
+
+    return current_raw_pos + diff;
+}
+
+WriteResult MainControlNode::safeSendCommand(
+    RobStrideMotor& motor,
+    float torque,
+    float position,
+    float velocity,
+    float kp,
+    float kd)
+{
+    errno = 0;
+
+    const bool ok = motor.sendMotionCommand(torque, position, velocity, kp, kd);
+    if (ok)
+    {
+        return WriteResult::Ok;
+    }
+
+    switch (errno)
+    {
+        case ENOBUFS:
+        case EAGAIN:
+            return WriteResult::WouldBlock;
+        case ENETDOWN:
+        case ENODEV:
+            return WriteResult::BusDown;
+        case EINVAL:
+            return WriteResult::InvalidArg;
+        default:
+            return WriteResult::IoError;
+    }
+}
+
 void MainControlNode::handle_read_packet()
 {
     static int fail_count = 0;
     static int success_count = 0;
 
     std::vector<bool> current_cycle_updated(all_motors_.size(), false);
-    uint32_t rx_id;
+
+    uint32_t rx_id = 0;
     std::vector<uint8_t> rx_data;
 
-    // 각 CAN 인터페이스에서 non-blocking 수신
     for (auto& group : can_groups_)
     {
         while (group.transport->receive(rx_id, rx_data, 0))
         {
-            uint8_t motor_id = RobStrideProtocol::getMotorIdFromCanId(rx_id);
+            const uint8_t motor_id = RobStrideProtocol::getMotorIdFromCanId(rx_id);
 
-            for (auto& motor : group.motors)
+            for (size_t local_idx = 0; local_idx < group.motors.size(); ++local_idx)
             {
-                if (motor->getMotorId() == motor_id)
+                auto& motor = group.motors[local_idx];
+                if (motor->getMotorId() != motor_id)
                 {
-                    if (motor->processPacket(rx_id, rx_data))
-                    {
-                        // all_motors_에서의 인덱스 찾기
-                        for (size_t idx = 0; idx < all_motors_.size(); idx++)
-                        {
-                            if (all_motors_[idx] == motor)
-                            {
-                                current_cycle_updated[idx] = true;
-                                break;
-                            }
-                        }
-                    }
-                    break;
+                    continue;
                 }
+
+                if (motor->processPacket(rx_id, rx_data))
+                {
+                    const size_t packet_index = group.global_packet_indices[local_idx];
+                    current_cycle_updated[packet_index] = true;
+                }
+                break;
             }
         }
     }
-    // static auto last_msg = roa_interfaces::msg::MotorStateArray();
-    // last_msg.states.resize(static_cast<int>(all_motors_.size()));
+
     auto msg = roa_interfaces::msg::MotorStateArray();
-    static int seq = 0;
-    msg.states.resize(static_cast<int>(all_motors_.size()));
+    msg.states.resize(all_motors_.size());
     msg.header.stamp = this->get_clock()->now();
     msg.header.frame_id = "motor_states";
-    
-    
-    int data_idx = 0;
 
-    for (size_t i = 0; i < all_motors_.size(); i++)
+    for (size_t i = 0; i < all_motors_.size(); ++i)
     {
+        msg.states[i].motor_id = all_motors_[i]->getMotorId();
+
         if (current_cycle_updated[i])
         {
-            success_count++;
-            std::lock_guard<std::mutex> lock(command_mutex_);
-            float desired_pos = (i < packet_commands_.commands.size()) ? packet_commands_.commands[i].position : 0.0f;
-            float wrapped_pos = wrapToPi(static_cast<float>(all_motors_[i]->getPosition()));
-            RCLCPP_INFO(this->get_logger(), "[Red Packet] Motor[%zu] Pos: %.3f, Vel: %.3f, Current: %.3f A, Desired Pos: %.3f",
-            i, wrapped_pos, (float)all_motors_[i]->getVelocity(), (float)all_motors_[i]->getCurrent(), desired_pos);
+            ++success_count;
 
+            const float wrapped_pos = wrapToPi(static_cast<float>(all_motors_[i]->getPosition()));
+            const float velocity = static_cast<float>(all_motors_[i]->getVelocity());
+            const float current  = static_cast<float>(all_motors_[i]->getCurrent());
 
-            msg.states[i].motor_id = all_motors_[i]->getMotorId();
-            // Col 0: position
             msg.states[i].position = wrapped_pos;
-           
-            // Col 1: velocity
-            msg.states[i].velocity = static_cast<float>(all_motors_[i]->getVelocity());
+            msg.states[i].velocity = velocity;
+            msg.states[i].current  = current;
 
-            // Col 2: current
-            msg.states[i].current = static_cast<float>(all_motors_[i]->getCurrent());
-
+            RCLCPP_DEBUG(this->get_logger(),
+                "[Read] bus=%s packet_index=%zu motor_id=%u pos=%.3f vel=%.3f cur=%.3f",
+                packet_index_to_bus_[i].c_str(),
+                i,
+                msg.states[i].motor_id,
+                wrapped_pos,
+                velocity,
+                current);
         }
         else
         {
-            fail_count++;
+            ++fail_count;
+
             RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-                "[Read Packet] Motor[%zu] update failed! (Success: %d, Fail: %d)",
-                i, success_count, fail_count);
+                "[Read] bus=%s packet_index=%zu motor_id=%u update failed (success=%d fail=%d)",
+                packet_index_to_bus_[i].c_str(),
+                i,
+                msg.states[i].motor_id,
+                success_count,
+                fail_count);
         }
     }
+
     state_pub->publish(msg);
-    // for(size_t i = 0; i < all_motors_.size(); i++)
-    // {
-    //     double dt = (rclcpp::Time(msg.header.stamp) - rclcpp::Time(last_msg.header.stamp)).seconds();
-    //     if (dt > 1e-6)
-    //     {
-    //         msg.states[i].velocity = (msg.states[i].position - last_msg.states[i].position) / dt;
-    //     }
-    // }   
-    // state_pub_1->publish(msg);
-    // last_msg = msg;
     transition_to(ControlState::WRITE_PACKET);
+}
+
+void MainControlNode::logWriteSummaryThrottle()
+{
+    for (const auto& group : can_groups_)
+    {
+        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+            "[WriteSummary] bus=%s ok=%u fail=%u enobufs_total=%u enobufs_streak=%u cooldown=%s",
+            group.interface_name.c_str(),
+            group.write_stats.ok_writes,
+            group.write_stats.fail_writes,
+            group.write_stats.enobufs_count,
+            group.write_stats.consecutive_enobufs,
+            group.write_stats.cooldown ? "true" : "false");
+    }
 }
 
 void MainControlNode::handle_write_packet()
@@ -435,108 +516,179 @@ void MainControlNode::handle_write_packet()
     if (!packet_initialized_)
     {
         RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-            "[Write Packet] packet_commands_ not initialized yet");
+            "[Write] packet_commands_ not initialized yet");
         transition_to(ControlState::READ_PACKET);
         return;
     }
 
-    if (!walk_initialized_)
+    if (!walk_initialized_ && !start_positions_captured_)
     {
-        // init 시작 시점의 실제 모터 위치를 한 번만 캡처
-        if (!start_positions_captured_)
+        start_positions_.resize(all_motors_.size(), 0.0f);
+
+        for (size_t i = 0; i < all_motors_.size(); ++i)
         {
-            start_positions_.resize(all_motors_.size(), 0.0f);
-
-            for (size_t i = 0; i < all_motors_.size(); ++i)
-            {
-                start_positions_[i] = static_cast<float>(all_motors_[i]->getPosition());
-            }
-
-            start_positions_captured_ = true;
-            init_tick_count_ = 0;
-
-            RCLCPP_INFO(this->get_logger(),
-                "[Init] Captured start positions for %zu motors",
-                all_motors_.size());
+            start_positions_[i] = static_cast<float>(all_motors_[i]->getPosition());
         }
 
-        init_tick_count_++;
+        start_positions_captured_ = true;
+        init_tick_count_ = 0;
 
-        float alpha = static_cast<float>(init_tick_count_) /
-                      static_cast<float>(INIT_TOTAL_TICKS);
+        RCLCPP_INFO(this->get_logger(),
+            "[Init] Captured start positions for %zu motors",
+            all_motors_.size());
+    }
+
+    float alpha = 1.0f;
+    if (!walk_initialized_)
+    {
+        ++init_tick_count_;
+        alpha = static_cast<float>(init_tick_count_) /
+                static_cast<float>(INIT_TOTAL_TICKS);
         if (alpha > 1.0f)
         {
             alpha = 1.0f;
         }
-
-        for (size_t i = 0; i < all_motors_.size(); i++)
-        {
-            float start_raw  = start_positions_[i];
-            float target_pos = wrapToPi(packet_commands_.commands[i].position);
-
-            float diff = target_pos - wrapToPi(start_raw);
-            if (diff > static_cast<float>(M_PI))  diff -= 2.0f * static_cast<float>(M_PI);
-            if (diff < -static_cast<float>(M_PI)) diff += 2.0f * static_cast<float>(M_PI);
-
-            float interpolated_target = start_raw + alpha * diff;
-
-            all_motors_[i]->sendMotionCommand(
-                packet_commands_.commands[i].torque,
-                interpolated_target,
-                packet_commands_.commands[i].velocity,
-                packet_commands_.commands[i].kp,
-                packet_commands_.commands[i].kd);
-
-            RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 200,
-                "[Init] packet_index=%zu motor_id=%u start=%.3f target=%.3f cmd=%.3f alpha=%.3f",
-                i,
-                packet_commands_.commands[i].motor_id,
-                start_raw,
-                target_pos,
-                interpolated_target,
-                alpha);
-        }
-
-        if (init_tick_count_ >= INIT_TOTAL_TICKS)
-        {
-            walk_initialized_ = true;
-            RCLCPP_INFO(this->get_logger(),
-                "[Init] Walk initialized after %d ticks", init_tick_count_);
-        }
-
-        transition_to(ControlState::READ_PACKET);
-        return;
     }
 
-    // 정상 write
-    for (size_t i = 0; i < all_motors_.size(); i++)
+    for (auto& group : can_groups_)
     {
-        float raw_pos    = static_cast<float>(all_motors_[i]->getPosition());
-        float target_pos = wrapToPi(packet_commands_.commands[i].position);
+        const auto now = this->get_clock()->now();
 
-        float diff = target_pos - wrapToPi(raw_pos);
-        if (diff > static_cast<float>(M_PI))  diff -= 2.0f * static_cast<float>(M_PI);
-        if (diff < -static_cast<float>(M_PI)) diff += 2.0f * static_cast<float>(M_PI);
+        if (group.write_stats.cooldown && now < group.write_stats.cooldown_until)
+        {
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                "[Write] bus=%s in cooldown",
+                group.interface_name.c_str());
+            continue;
+        }
 
-        float normalized_target = raw_pos + diff;
+        group.write_stats.cooldown = false;
+        bool bus_blocked_this_cycle = false;
 
-        all_motors_[i]->sendMotionCommand(
-            packet_commands_.commands[i].torque,
-            normalized_target,
-            packet_commands_.commands[i].velocity,
-            packet_commands_.commands[i].kp,
-            packet_commands_.commands[i].kd);
+        for (size_t local_idx = 0; local_idx < group.motors.size(); ++local_idx)
+        {
+            const size_t packet_index = group.global_packet_indices[local_idx];
+            auto& motor = group.motors[local_idx];
+            auto& cmd = packet_commands_.commands[packet_index];
 
-        RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 500,
-            "[Write Packet] packet_index=%zu motor_id=%u raw=%.3f target=%.3f diff=%.3f cmd=%.3f",
-            i,
-            packet_commands_.commands[i].motor_id,
-            raw_pos,
-            target_pos,
-            diff,
-            normalized_target);
+            float command_pos = wrapToPi(cmd.position);
+
+            if (!walk_initialized_)
+            {
+                const float start_raw = start_positions_[packet_index];
+                float diff = command_pos - wrapToPi(start_raw);
+
+                if (diff > static_cast<float>(M_PI))
+                    diff -= 2.0f * static_cast<float>(M_PI);
+                if (diff < -static_cast<float>(M_PI))
+                    diff += 2.0f * static_cast<float>(M_PI);
+
+                command_pos = start_raw + alpha * diff;
+
+                RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 200,
+                    "[Init] bus=%s packet_index=%zu motor_id=%u start=%.3f target=%.3f cmd=%.3f alpha=%.3f",
+                    group.interface_name.c_str(),
+                    packet_index,
+                    cmd.motor_id,
+                    start_positions_[packet_index],
+                    wrapToPi(cmd.position),
+                    command_pos,
+                    alpha);
+            }
+            else
+            {
+                const float raw_pos = static_cast<float>(all_motors_[packet_index]->getPosition());
+                command_pos = computeWrappedCommand(raw_pos, wrapToPi(cmd.position));
+            }
+
+            const WriteResult result = safeSendCommand(
+                *motor,
+                cmd.torque,
+                command_pos,
+                cmd.velocity,
+                cmd.kp,
+                cmd.kd);
+
+            motor_write_stats_[packet_index].last_result = result;
+
+            if (result == WriteResult::Ok)
+            {
+                motor_write_stats_[packet_index].consecutive_failures = 0;
+                ++group.write_stats.ok_writes;
+                group.write_stats.consecutive_enobufs = 0;
+                continue;
+            }
+
+            ++motor_write_stats_[packet_index].consecutive_failures;
+            ++group.write_stats.fail_writes;
+
+            const char* phase = walk_initialized_ ? "track" : "init";
+
+            if (result == WriteResult::WouldBlock)
+            {
+                ++group.write_stats.enobufs_count;
+                ++group.write_stats.consecutive_enobufs;
+
+                RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                    "[Write] phase=%s bus=%s motor_id=%u packet_index=%zu result=%s motor_fail_streak=%u bus_enobufs_streak=%u",
+                    phase,
+                    group.interface_name.c_str(),
+                    cmd.motor_id,
+                    packet_index,
+                    toString(result),
+                    motor_write_stats_[packet_index].consecutive_failures,
+                    group.write_stats.consecutive_enobufs);
+
+                bus_blocked_this_cycle = true;
+                break;
+            }
+
+            if (result == WriteResult::BusDown)
+            {
+                RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                    "[Write] phase=%s bus=%s motor_id=%u packet_index=%zu result=%s",
+                    phase,
+                    group.interface_name.c_str(),
+                    cmd.motor_id,
+                    packet_index,
+                    toString(result));
+
+                bus_blocked_this_cycle = true;
+                break;
+            }
+
+            RCLCPP_WARN_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                "[Write] phase=%s bus=%s motor_id=%u packet_index=%zu result=%s fail_streak=%u",
+                phase,
+                group.interface_name.c_str(),
+                cmd.motor_id,
+                packet_index,
+                toString(result),
+                motor_write_stats_[packet_index].consecutive_failures);
+        }
+
+        if (bus_blocked_this_cycle &&
+            group.write_stats.consecutive_enobufs >= enobufs_cooldown_threshold_)
+        {
+            group.write_stats.cooldown = true;
+            group.write_stats.cooldown_until = now + bus_write_cooldown_;
+
+            RCLCPP_ERROR_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
+                "[Write] bus=%s entered cooldown: enobufs_streak=%u cooldown_ms=%.1f",
+                group.interface_name.c_str(),
+                group.write_stats.consecutive_enobufs,
+                bus_write_cooldown_.seconds() * 1000.0);
+        }
     }
 
+    if (!walk_initialized_ && alpha >= 1.0f)
+    {
+        walk_initialized_ = true;
+        RCLCPP_INFO(this->get_logger(),
+            "[Init] Walk initialized after %d ticks", init_tick_count_);
+    }
+
+    logWriteSummaryThrottle();
     transition_to(ControlState::READ_PACKET);
 }
 
@@ -548,13 +700,11 @@ void MainControlNode::walkCallback(const roa_interfaces::msg::MotorCommandArray:
 
     std::lock_guard<std::mutex> lock(command_mutex_);
 
-    // header 복사
     packet_commands_.header = msg->header;
 
-    // 들어온 command들을 motor_id 기반으로 packet index에 링크
     for (const auto& cmd : msg->commands)
     {
-        auto it = motor_id_to_index_.find(cmd.motor_id);
+        const auto it = motor_id_to_index_.find(cmd.motor_id);
         if (it == motor_id_to_index_.end())
         {
             RCLCPP_WARN(this->get_logger(),
@@ -566,9 +716,15 @@ void MainControlNode::walkCallback(const roa_interfaces::msg::MotorCommandArray:
         packet_commands_.commands[packet_index] = cmd;
 
         RCLCPP_INFO_THROTTLE(this->get_logger(), *this->get_clock(), 1000,
-            "[Walk Callback] Link motor_id=%u -> packet_index=%zu | pos=%.3f vel=%.3f kp=%.3f kd=%.3f tq=%.3f",
-            cmd.motor_id, packet_index,
-            cmd.position, cmd.velocity, cmd.kp, cmd.kd, cmd.torque);
+            "[Walk Callback] bus=%s motor_id=%u -> packet_index=%zu | pos=%.3f vel=%.3f kp=%.3f kd=%.3f tq=%.3f",
+            packet_index_to_bus_[packet_index].c_str(),
+            cmd.motor_id,
+            packet_index,
+            cmd.position,
+            cmd.velocity,
+            cmd.kp,
+            cmd.kd,
+            cmd.torque);
     }
 
     if (!packet_initialized_)
@@ -576,43 +732,56 @@ void MainControlNode::walkCallback(const roa_interfaces::msg::MotorCommandArray:
         RCLCPP_INFO(this->get_logger(), "[Walk Callback] First valid command received");
     }
 
-
     packet_initialized_ = true;
 }
 
 void MainControlNode::torqueCallback(const std_msgs::msg::Bool::SharedPtr msg)
 {
-    bool torque_enable = msg->data;
+    const bool torque_enable = msg->data;
 
-    for (size_t i = 0; i < all_motors_.size(); i++)
+    for (size_t i = 0; i < all_motors_.size(); ++i)
     {
+        bool ok = false;
+
         if (torque_enable)
         {
-            if (all_motors_[i]->enable())
+            ok = all_motors_[i]->enable();
+            if (ok)
             {
-                RCLCPP_INFO(this->get_logger(), "[Torque Callback] Motor[%zu] enabled successfully", i);
+                RCLCPP_INFO(this->get_logger(),
+                    "[Torque Callback] Motor[%zu] enabled successfully", i);
             }
             else
             {
-                RCLCPP_ERROR(this->get_logger(), "[Torque Callback] Failed to enable motor[%zu]", i);
+                RCLCPP_ERROR(this->get_logger(),
+                    "[Torque Callback] Failed to enable motor[%zu] (bus=%s, motor_id=%u)",
+                    i,
+                    packet_index_to_bus_[i].c_str(),
+                    all_motors_[i]->getMotorId());
             }
         }
         else
         {
-            if (all_motors_[i]->disable())
+            ok = all_motors_[i]->disable();
+            if (ok)
             {
-                RCLCPP_INFO(this->get_logger(), "[Torque Callback] Motor[%zu] disabled successfully", i);
+                RCLCPP_INFO(this->get_logger(),
+                    "[Torque Callback] Motor[%zu] disabled successfully", i);
             }
             else
             {
-                RCLCPP_ERROR(this->get_logger(), "[Torque Callback] Failed to disable motor[%zu]", i);
+                RCLCPP_ERROR(this->get_logger(),
+                    "[Torque Callback] Failed to disable motor[%zu] (bus=%s, motor_id=%u)",
+                    i,
+                    packet_index_to_bus_[i].c_str(),
+                    all_motors_[i]->getMotorId());
             }
         }
     }
 }
 
-// 메인 함수
-int main(int argc, char **argv) {
+int main(int argc, char **argv)
+{
     rclcpp::init(argc, argv);
 
     auto node = std::make_shared<MainControlNode>();
@@ -622,6 +791,5 @@ int main(int argc, char **argv) {
     exe.spin();
 
     rclcpp::shutdown();
-
     return 0;
 }

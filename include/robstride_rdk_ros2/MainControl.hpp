@@ -6,16 +6,17 @@
 #include "lifecycle_msgs/msg/transition.hpp"
 #include "RobStrideMotor.hpp"
 #include "CanTransport.hpp"
-#include "std_msgs/msg/float32_multi_array.hpp"
 #include "std_msgs/msg/bool.hpp"
 #include "roa_interfaces/msg/motor_state.hpp"
 #include "roa_interfaces/msg/motor_state_array.hpp"
 #include "roa_interfaces/msg/motor_command.hpp"
 #include "roa_interfaces/msg/motor_command_array.hpp"
-#include <unordered_map>
 
+#include <unordered_map>
 #include <mutex>
 #include <memory>
+#include <vector>
+#include <string>
 
 enum class ControlState
 {
@@ -23,14 +24,48 @@ enum class ControlState
     READ_PACKET
 };
 
+enum class WriteResult
+{
+    Ok = 0,
+    WouldBlock,   // ENOBUFS, EAGAIN
+    BusDown,      // ENETDOWN, ENODEV
+    IoError,      // generic write failure
+    InvalidArg,
+};
 
-class MainControlNode : public rclcpp_lifecycle::LifecycleNode {
+struct BusWriteStats
+{
+    uint32_t ok_writes = 0;
+    uint32_t fail_writes = 0;
+    uint32_t enobufs_count = 0;
+    uint32_t consecutive_enobufs = 0;
+
+    bool cooldown = false;
+    rclcpp::Time cooldown_until{0, 0, RCL_ROS_TIME};
+};
+
+struct MotorWriteStats
+{
+    uint32_t consecutive_failures = 0;
+    WriteResult last_result = WriteResult::Ok;
+};
+
+struct CanBusGroup
+{
+    std::string interface_name;
+    std::shared_ptr<CanTransport> transport;
+    std::vector<std::shared_ptr<RobStrideMotor>> motors;
+
+    BusWriteStats write_stats;
+    std::vector<size_t> global_packet_indices;
+};
+
+class MainControlNode : public rclcpp_lifecycle::LifecycleNode
+{
 public:
-    // 생성자 및 소멸자
     explicit MainControlNode(const rclcpp::NodeOptions & options = rclcpp::NodeOptions());
     virtual ~MainControlNode();
 
-    // Lifecycle 콜백 함수들
     rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn
     on_configure(const rclcpp_lifecycle::State &);
 
@@ -38,7 +73,6 @@ public:
     on_activate(const rclcpp_lifecycle::State &);
 
 private:
-    // 주기적으로 실행될 제어 루프
     void control_loop();
     void walkCallback(const roa_interfaces::msg::MotorCommandArray::SharedPtr msg);
     void torqueCallback(const std_msgs::msg::Bool::SharedPtr msg);
@@ -51,40 +85,48 @@ private:
     bool canSetup();
     std::string execute_command(const std::string& cmd);
 
-    // 멤버 변수
+    WriteResult safeSendCommand(
+        RobStrideMotor& motor,
+        float torque,
+        float position,
+        float velocity,
+        float kp,
+        float kd);
+
+    const char* toString(WriteResult result) const;
+    float computeWrappedCommand(float current_raw_pos, float target_wrapped_pos) const;
+    void resetRuntimeStates();
+    void logWriteSummaryThrottle();
+
     std::vector<CanBusGroup> can_groups_;
-    std::vector<std::shared_ptr<RobStrideMotor>> all_motors_;  // 모든 CAN의 모터를 순서대로 보관
+    std::vector<std::shared_ptr<RobStrideMotor>> all_motors_;
+
     rclcpp::TimerBase::SharedPtr timer_;
     rclcpp::Subscription<roa_interfaces::msg::MotorCommandArray>::SharedPtr walk_sub;
     rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr torque_sub;
     rclcpp::Publisher<roa_interfaces::msg::MotorStateArray>::SharedPtr state_pub;
-    rclcpp::Publisher<roa_interfaces::msg::MotorStateArray>::SharedPtr state_pub_1;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr initial_pub;
 
-    ControlState current_state;
+    ControlState current_state{ControlState::READ_PACKET};
 
-    // roa_interfaces::msg::MotorCommandArray motor_commands_;
+    std::vector<std::string> packet_index_to_bus_;
+    std::vector<MotorWriteStats> motor_write_stats_;
+
+    rclcpp::Duration bus_write_cooldown_{0, 50 * 1000 * 1000}; // 50ms
+    uint32_t enobufs_cooldown_threshold_ = 5;
+
     std::mutex command_mutex_;
 
-    // 초기 set 자세
     bool walk_initialized_ = false;
     bool start_positions_captured_ = false;
     std::vector<float> start_positions_;
     int init_tick_count_ = 0;
     static constexpr int INIT_TOTAL_TICKS = 100;
 
-
-    // ROA IFACE ID PACKIT MAPPER
-    // motor_id -> packet index
     std::unordered_map<uint16_t, size_t> motor_id_to_index_;
 
-    // 최종 전송용 packet 버퍼 (all_motors_ 순서와 동일)
     roa_interfaces::msg::MotorCommandArray packet_commands_;
-
-    // packet slot이 한 번이라도 채워졌는지
     bool packet_initialized_{false};
-
-    // std::mutex command_mutex_;
 };
 
 #endif // MAIN_CONTROL_HPP
